@@ -2,6 +2,7 @@
 
 The follow-up work of https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo
 
+STATUS: WIP (work in progress); some experiments are still running.
 
 Prerequisites:
 * A slurm cluster of 8xH100 box (unless we add LoRA)
