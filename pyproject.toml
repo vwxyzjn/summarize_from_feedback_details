@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "summarize-from-feedback-details"
+version = "0.1.0"
+description = ""
+authors = ["Costa Huang <costa.huang@outlook.com>"]
+readme = "README.md"
+packages = [{include = "summarize_from_feedback_details"}]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+torch = "^2.1.2"
+tyro = "^0.6.0"
+datasets = "^2.12.0"
+wandb = "^0.15.4"
+nvitop = "^1.1.2"
+ftfy = "^6.1.1"
+rich = "^13.4.2"
+transformers = "4.33.2"
+tensorboard = "^2.13.0"
+accelerate = "^0.25.0"
+clu = "^0.0.9"
+tabulate = "^0.9.0"
+deepspeed = "^0.12.6"
+evaluate = "^0.4.1"
+nltk = "^3.8.1"
+rouge-score = "^0.1.2"
+huggingface-hub = "^0.19.4"
+matplotlib = "^3.8.2"
+openai = "^1.6.1"
+
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^3.3.2"
+ipykernel = "^6.25.1"
+pytest = "^7.4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
