@@ -18,15 +18,15 @@ api = HfApi()
 
 
 """
-poetry run python lm_human_preference_details/tldr_dataset.py
-poetry run python lm_human_preference_details/tldr_dataset.py \
+poetry run python summarize_from_feedback_details/tldr_dataset.py
+poetry run python summarize_from_feedback_details/tldr_dataset.py \
     --base_model=EleutherAI/pythia-1b-deduped \
     --max_sft_response_length=53 \
     --max_sft_query_response_length=562 \
     --max_rm_response_length=169 \
     --max_rm_query_response_length=638
 
-poetry run python -i lm_human_preference_details/tldr_dataset.py \
+poetry run python -i summarize_from_feedback_details/tldr_dataset.py \
     --base_model=EleutherAI/pythia-1b-deduped \
     --tldr_params.max_sft_response_length=53 \
     --tldr_params.max_sft_query_response_length=562 \
