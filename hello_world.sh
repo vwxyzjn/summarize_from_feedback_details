@@ -4,6 +4,7 @@ LR=3e-6
 REWARD_MODEL_PATH=models/$MODEL/reward_model_$SEED
 SFT_MODEL_PATH=models/$MODEL/sft_model_$SEED
 POLICY_MODEL_PATH=models/$MODEL/policy_model_$SEED
+local_rollout_forward_batch_size=64
 
 poetry run accelerate launch --config_file deepspeed.yaml \
     summarize_from_feedback_details/summarize/sft.py \
