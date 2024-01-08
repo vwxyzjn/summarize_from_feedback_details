@@ -25,15 +25,21 @@ To run a hello world example, you can run the `hello_world.sh` script. For the f
 sbatch benchmark.sbatch
 ```
 
-It uses our pre-built TL;DR datasets:
+The command above runs end-to-end RLHF experiments with 4 random seeds. We then run `eval/sft_rm_scale.py` and `eval/rlhf_scaling_plot.py` which fetch experiments and produce the following results.
+
+| Rouge Score | Reward Model | RLHF Policy |
+| --- | --- | --- |
+| ![](eval/rouge_score_plot.png) | ![](eval/rm_scale_plot.png) | ![](eval/rlhf_scaling_plot.png) |
+
+### Dataset Information
+
+
+We use our pre-built TL;DR datasets:
 
 * SFT dataset: [cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162](https://huggingface.co/datasets/cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162)
 * Preference dataset: [cleanrl/summarize_from_feedback_oai_preprocessing_1704563162](https://huggingface.co/datasets/cleanrl/summarize_from_feedback_oai_preprocessing_1704563162)
 
-
-
-### (Optionally) You can recreate the dataset
-
+You can optionally build them yourself with
 
 ```bash
 poetry run python summarize_from_feedback_details/tldr_dataset.py \
