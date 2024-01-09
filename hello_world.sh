@@ -1,13 +1,18 @@
 SEED=1
-MODEL=EleutherAI/pythia-410m-deduped
+if [ -z "$MODEL" ]; then
+    # MODEL=EleutherAI/pythia-6.9b-deduped
+    # MODEL=EleutherAI/pythia-2.8b-deduped
+    # MODEL=EleutherAI/pythia-1b-deduped
+    MODEL=EleutherAI/pythia-410m-deduped
+fi
 LR=3e-6
 REWARD_MODEL_PATH=models/$MODEL/reward_model_$SEED
 SFT_MODEL_PATH=models/$MODEL/sft_model_$SEED
 POLICY_MODEL_PATH=models/$MODEL/policy_model_$SEED
-local_rollout_forward_batch_size=64
+local_rollout_forward_batch_size=2
 
 poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/summarize/sft.py \
+    summarize_from_feedback_details/sft.py \
     --task.query_dataset=cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162 \
     --base_model=$MODEL \
     --lr=$LR \
@@ -19,7 +24,7 @@ poetry run accelerate launch --config_file deepspeed.yaml \
     --seed=$SEED
  
 poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/summarize/reward.py \
+    summarize_from_feedback_details/reward.py \
     --label_dataset=cleanrl/summarize_from_feedback_oai_preprocessing_1704563162 \
     --base_model=$SFT_MODEL_PATH \
     --lr=$LR \
@@ -33,7 +38,7 @@ poetry run accelerate launch --config_file deepspeed.yaml \
 
 # proper left padding
 poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/summarize/ppo_left_padding.py \
+    summarize_from_feedback_details/ppo_left_padding.py \
     --task.query_dataset=cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162 \
     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
     --gradient_accumulation_steps=$gradient_accumulation_steps \

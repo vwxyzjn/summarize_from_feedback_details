@@ -58,7 +58,7 @@ if [ "$MODEL" = "EleutherAI/pythia-6.9b-deduped" ]; then
 fi
 
 srun poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/summarize/sft.py \
+    summarize_from_feedback_details/sft.py \
     --task.query_dataset=cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162 \
     --base_model=$MODEL \
     --lr=$LR \
@@ -70,7 +70,7 @@ srun poetry run accelerate launch --config_file deepspeed.yaml \
     --seed=$SEED
  
 srun poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/summarize/reward.py \
+    summarize_from_feedback_details/reward.py \
     --label_dataset=cleanrl/summarize_from_feedback_oai_preprocessing_1704563162 \
     --base_model=$SFT_MODEL_PATH \
     --lr=$LR \
@@ -84,7 +84,7 @@ srun poetry run accelerate launch --config_file deepspeed.yaml \
 
 # proper left padding
 srun poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/summarize/ppo_left_padding.py \
+    summarize_from_feedback_details/ppo_left_padding.py \
     --task.query_dataset=cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162 \
     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
     --gradient_accumulation_steps=$gradient_accumulation_steps \
