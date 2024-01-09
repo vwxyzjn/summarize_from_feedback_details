@@ -9,7 +9,17 @@ LR=3e-6
 REWARD_MODEL_PATH=models/$MODEL/reward_model_$SEED
 SFT_MODEL_PATH=models/$MODEL/sft_model_$SEED
 POLICY_MODEL_PATH=models/$MODEL/policy_model_$SEED
-local_rollout_forward_batch_size=2
+
+# vary the following parameters to fit your GPU memory
+local_rollout_forward_batch_size=2 # smaller fits better on GPU
+gradient_accumulation_steps=64 # bigger fits better on GPU
+local_micro_batch_size=1 # smaller fits better on GPU
+local_eval_batch_size=1 # smaller fits better on GPU
+
+# 1. you want to make sure gradient_accumulation_steps * local_micro_batch_size = 64
+# so you have the same hyperparameters as the paper
+# 2. if you are running on a single GPU, you want to make sure 
+# gradient_accumulation_steps * local_micro_batch_size = 512 to have the same hyperparameters
 
 poetry run accelerate launch --config_file deepspeed.yaml \
     summarize_from_feedback_details/sft.py \
