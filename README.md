@@ -27,9 +27,12 @@ sbatch benchmark.sbatch
 
 The command above runs end-to-end RLHF experiments with 4 random seeds. We then run `eval/sft_rm_scale.py` and `eval/rlhf_scaling_plot.py` which fetch experiments and produce the following results.
 
-| Rouge Score | Reward Model | RLHF Policy |
-| --- | --- | --- |
-| ![](eval/rouge_score_plot.png) | ![](eval/rm_scale_plot.png) | ![](eval/rlhf_scaling_plot.png) |
+| Rouge Score (sft.py) | Reward Model (reward.py) | 
+| --- | --- | 
+| ![](eval/rouge_score_plot.png) | ![](eval/rm_scale_plot.png) |
+| RLHF Policy (ppo_left_padding.py) | |
+| ![](eval/rlhf_scaling_plot.png) | |
+
 
 ### Dataset Information
 
