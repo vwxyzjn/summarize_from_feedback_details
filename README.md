@@ -2,7 +2,9 @@
 
 The follow-up work of https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo
 
-STATUS: WIP (work in progress); some experiments are still running.
+
+## STATUS: **WIP (work in progress)**; some experiments are still running. Not ready for public consumption yet. Made public so that we can share with collaborators.
+
 
 Prerequisites:
 * A slurm cluster of 8xH100 box (unless we add LoRA)
