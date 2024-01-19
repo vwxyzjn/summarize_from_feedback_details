@@ -33,7 +33,7 @@ The command above runs end-to-end RLHF experiments with 4 random seeds. We then 
 | --- | --- | 
 | ![](eval/rouge_score_plot.png) | ![](eval/rm_scale_plot.png) |
 | RLHF Policy (ppo_left_padding.py) | |
-| ![](eval/rlhf_scaling_plot.png) | |
+| ![](eval/rlhf_scale_plot.png) | |
 
 
 ### Dataset Information

@@ -54,6 +54,7 @@ async def process_text(post, summary_a, summary_b, i):
             ],
         )
         r = response.choices[0].message.content
+        # print(text + r)
         try:
             comparison = r.split("Comparison:")[1].split("Preferred:")[0].strip()
             preferred = r.split("Preferred:")[1].strip()
