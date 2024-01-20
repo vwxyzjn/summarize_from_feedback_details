@@ -135,7 +135,7 @@ plt.scatter(
 plt.axhline(y=0.5, color='black', linestyle='-.', label='reference summary')
 
 # Setting the title and labels
-plt.title("RLHF scaling law")
+plt.title("RLHF scaling")
 plt.xlabel("Model size")
 plt.ylabel("Fraction preferred to ref (according to GPT-4)")
 plt.xscale("log")  # Setting the x-axis to a logarithmic scale

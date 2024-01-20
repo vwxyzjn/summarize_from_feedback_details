@@ -114,7 +114,7 @@ plt.axhline(y=0.77, color='black', linestyle='-.', label='Human baseline')
 plt.axhline(y=0.83, color='black', linestyle='--', label='Ensemble of humans')
 
 # Setting the title and labels
-plt.title("RM scaling law")
+plt.title("RM scaling")
 plt.xlabel("Model size")
 plt.ylabel("Validation accuracy")
 plt.xscale("log")  # Setting the x-axis to a logarithmic scale
@@ -165,7 +165,7 @@ for color_idx, ykey in enumerate(ykeys):
     )
 
 # Setting the title and labels
-plt.title("ROUGE scores scaling law")
+plt.title("ROUGE scores scaling")
 plt.xlabel("Model size")
 plt.ylabel("ROUGE score")
 plt.xscale("log")  # Setting the x-axis to a logarithmic scale
