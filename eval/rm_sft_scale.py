@@ -87,16 +87,16 @@ df = get_runs_df(wandb.Api().runs(
     }
 ))
 plot_reward(df, colors[0], "reward modeling")
-df2 = get_runs_df(wandb.Api().runs(
-    path=f"costa-huang/tldr_summarize",
-    filters={
-        "$and": [
-            {f"config.exp_name.value": "dpo"},
-            {"tags": {"$in": ["refactor111"]}},
-        ]
-    }
-))
-plot_reward(df2, colors[1], "dpo reward modeling")
+# df2 = get_runs_df(wandb.Api().runs(
+#     path=f"costa-huang/tldr_summarize",
+#     filters={
+#         "$and": [
+#             {f"config.exp_name.value": "dpo"},
+#             {"tags": {"$in": ["refactor111"]}},
+#         ]
+#     }
+# ))
+# plot_reward(df2, colors[1], "dpo reward modeling")
 # df2 = get_runs_df(wandb.Api().runs(
 #     path=f"costa-huang/tldr_summarize",
 #     filters={
