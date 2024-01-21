@@ -97,16 +97,16 @@ df2 = get_runs_df(wandb.Api().runs(
     }
 ))
 plot_reward(df2, colors[1], "dpo reward modeling")
-df2 = get_runs_df(wandb.Api().runs(
-    path=f"costa-huang/tldr_summarize",
-    filters={
-        "$and": [
-            {f"config.exp_name.value": "dpo_not_completion_only"},
-            {"tags": {"$in": ["refactor111"]}},
-        ]
-    }
-))
-plot_reward(df2, colors[2], "dpo (not completion only) reward modeling")
+# df2 = get_runs_df(wandb.Api().runs(
+#     path=f"costa-huang/tldr_summarize",
+#     filters={
+#         "$and": [
+#             {f"config.exp_name.value": "dpo_not_completion_only"},
+#             {"tags": {"$in": ["refactor111"]}},
+#         ]
+#     }
+# ))
+# plot_reward(df2, colors[2], "dpo (not completion only) reward modeling")
 
 
 # Adding the human baseline and ensemble of humans

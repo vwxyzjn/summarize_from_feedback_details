@@ -57,11 +57,11 @@ runs2 = list(wandb.Api().runs(
 #         ]
 #     }
 # ))
-runs = runs + runs2
+runs = runs # + runs2
 
 pref_rates = {
     "ppo_left_padding": defaultdict(list),
-    "dpo": defaultdict(list),
+    # "dpo": defaultdict(list),
 }
 for run in runs:
     if run.state != "finished":
