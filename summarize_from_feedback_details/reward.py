@@ -44,26 +44,12 @@ class Args:
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "tldr_summarize"
-    """the wandb's project name"""
-    wandb_entity: Optional[str] = None
-    """the entity (team) of wandb's project"""
     cuda: bool = True
     """Whether to use cuda if available."""
     run_name: Optional[str] = None
     """a unique name of this run"""
     load_from_cache_file: bool = False
     """Whether to load data from the local cache file in `dataset.map`"""
-    push_to_hub: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: Optional[str] = None
-    """the user or org name of the model repository from the Hugging Face Hub"""
-    hf_repo_id: Optional[str] = None
-    """the id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
-    hf_repo_revision: Optional[str] = None
-    """the revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
     deepspeed: bool = False
     """Whether to use deepspeed to train the model"""
     print_sample_output_freq: int = 220
@@ -83,6 +69,7 @@ class Args:
     warm_up_steps: int = 0
     """Number of warm up steps for the scheduler"""
 
+    # various batch sizes
     world_size: Optional[int] = None
     """The number of processes (GPUs) to use"""
     num_train_epochs: int = 1
@@ -115,12 +102,29 @@ class Args:
     """the path to the sft model"""
     num_train: int = 92832
     """the total episodes """
-    num_labels: int = 2
-    """the number of compared completions in preference dataset"""
-    output_dir: str = "models/reward_model"
-    """Where to save the model"""
     label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
+
+    # wandb and HF tracking configs
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "tldr_summarize"
+    """the wandb's project name"""
+    wandb_entity: Optional[str] = None
+    """the entity (team) of wandb's project"""
+    push_to_hub: bool = False
+    """whether to upload the saved model to huggingface"""
+    hf_entity: Optional[str] = None
+    """the user or org name of the model repository from the Hugging Face Hub"""
+    hf_repo_id: Optional[str] = None
+    """the id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    hf_repo_revision: Optional[str] = None
+    """the revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    hf_repo_url: Optional[str] = None
+    """the url of the saved model in the Hugging Face Hub (will be autoset)"""
+    output_dir: str = "models/reward_model"
+    """Where to save the model"""
+
 
 def parse_args() -> tuple[Args, Accelerator]:
     args = tyro.cli(Args)
@@ -141,6 +145,7 @@ def parse_args() -> tuple[Args, Accelerator]:
             args.hf_repo_id = f"{args.hf_entity}/{args.hf_repo_id}"
         if args.hf_repo_revision is None:  # auto-generate one
             args.hf_repo_revision = args.run_name
+        args.hf_repo_url = f"https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}"
     return args, accelerator
 
 
@@ -494,8 +499,4 @@ if __name__ == "__main__":
             )
             if args.push_to_hub:
                 unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
-                accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")
-
-# if __name__ == "__main__":
-#     args = tyro.cli(Args)
-#     train(args)
+                accelerator.print(f"🔥 pushed to {args.hf_repo_url}")
