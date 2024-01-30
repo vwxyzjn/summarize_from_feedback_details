@@ -15,7 +15,7 @@ import torch.optim as optim
 import tyro
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
-from accelerate.utils import gather_object
+from accelerate.utils import gather_object, broadcast
 from datasets import load_dataset
 from rich.console import Console
 from rich.pretty import pprint
@@ -32,39 +32,9 @@ from transformers import (
     PreTrainedModel,
     get_scheduler,
 )
+from huggingface_hub import HfApi
 
-
-@dataclass
-class LabelHParams:
-    type: Optional[str] = None
-    num_train: int = 92832
-    num_labels: int = 2
-    source: Optional[str] = None
-
-
-# a patch
-@dataclass
-class TaskHParams:
-    # Query params
-    query_length: int = 512
-    query_dataset: str = "vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_pythia-160m_53"
-
-    query_format_str: Optional[str] = "SUBREDDIT: r/{subreddit}\n\nTITLE: {title}\n\nPOST: {post}\n\nTL;DR:"
-    query_truncate_field: Optional[str] = "post"
-    query_truncate_text: Optional[str] = "\n"
-    query_padding: Optional[str] = None  # defaults to repeated spaces
-    query_pad_side: Optional[str] = "left"
-
-    # Response params
-    response_length: int = 53
-
-    # Truncate response after the first occurrence of this token at or after index after when sampling.
-    truncate_token: int = 50256  # EOS token
-    truncate_after: int = 16
-    penalty_reward_value: int = -1
-
-    # LM params
-    temperature: float = 0.01
+api = HfApi()
 
 
 @dataclass
@@ -87,9 +57,13 @@ class Args:
     load_from_cache_file: bool = False
     """Whether to load data from the local cache file in `dataset.map`"""
     push_to_hub: bool = False
-    "whether to upload the saved model to huggingface"
-    hf_entity: str = ""
-    "the user or org name of the model repository from the Hugging Face Hub"
+    """whether to upload the saved model to huggingface"""
+    hf_entity: Optional[str] = None
+    """the user or org name of the model repository from the Hugging Face Hub"""
+    hf_repo_id: Optional[str] = None
+    """the id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    hf_repo_revision: Optional[str] = None
+    """the revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
     deepspeed: bool = False
     """Whether to use deepspeed to train the model"""
     print_sample_output_freq: int = 220
@@ -100,7 +74,7 @@ class Args:
     # optimizer args
     eps: float = 1e-5
     """the epsilon value for the optimizer"""
-    lr: float = 5e-6
+    lr: float = 3e-6
     """the learning rate"""
     optimizer: Literal["adam", "adamw"] = "adamw"
     """Which optimizer to use"""
@@ -132,29 +106,50 @@ class Args:
 
     # other args
     base_model: str = "EleutherAI/pythia-160m"
-    reward_model_path: str = ""
     """the name of the pretrained model to use"""
-    dropout_layer_keys: List[str] = field(
-        default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
-    )
-    """Which layers to apply dropout to"""
+    query_dataset: str = "vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144"
+    """the query dataset"""
+    reward_model_path: str = ""
+    """the path to the reward model"""
+    sft_model_path: str = "EleutherAI/pythia-160m"
+    """the path to the sft model"""
+    num_train: int = 92832
+    """the total episodes """
+    num_labels: int = 2
+    """the number of compared completions in preference dataset"""
     output_dir: str = "models/reward_model"
     """Where to save the model"""
-    label_dataset: str = "cleanrl/summarize_from_feedback_oai_preprocessing_1704563162"
+    label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
-    logsigmoid: bool = True
-    """Whether to use log-sigmoid loss instead of cross-entropy loss"""
-    task: TaskHParams = field(default_factory=TaskHParams)
-    label: LabelHParams = field(default_factory=LabelHParams)
+
+def parse_args() -> tuple[Args, Accelerator]:
+    args = tyro.cli(Args)
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    args.world_size = accelerator.num_processes
+    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
+    args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
+    args.batch_size = int(args.local_batch_size * args.world_size)
+    time_tensor = torch.tensor(int(time.time()), device=accelerator.device)
+    time_int = broadcast(time_tensor, 0).item()  # avoid different timestamps across processes
+    args.run_name = f"{args.exp_name}__{args.seed}__{time_int}"
+    if args.push_to_hub:
+        if args.hf_repo_id is None: # auto-generate one
+            args.hf_repo_id = f"{args.base_model.replace('/', '_')}__{args.exp_name}__tldr"
+        if args.hf_entity is None:  # find the current user
+            args.hf_entity = api.whoami()["name"]
+        if "/" not in args.hf_repo_id: # prepend the current user
+            args.hf_repo_id = f"{args.hf_entity}/{args.hf_repo_id}"
+        if args.hf_repo_revision is None:  # auto-generate one
+            args.hf_repo_revision = args.run_name
+    return args, accelerator
 
 
-# taken from https://github.com/microsoft/DeepSpeedExamples/blob/737c6740bec38b77a24a59135b6481a53d566b38/applications/DeepSpeed-Chat/training/utils/model/model_utils.py#L20C1-L26C52
-def configure_dropout(model_config, dropout_layer_keys, dropout):
-    if dropout is not None:
-        for key in dropout_layer_keys:
-            if hasattr(model_config, key):
-                print(f"Setting model_config.{key} to {dropout}")
-                setattr(model_config, key, dropout)
+# taken from https://github.com/vwxyzjn/direct-preference-optimization/blob/f8b8c0f49dc92a430bae41585f9d467d3618fe2f/utils.py#L99
+def disable_dropout(model: torch.nn.Module):
+    """Disable dropout in a model."""
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0
 
 
 def print_rich_table(title: str, df: pd.DataFrame, console: Console) -> Table:
@@ -230,31 +225,25 @@ def evaluate(args: Args, accelerator, tokenizer, model, dataloader):
     with torch.no_grad():
         items = defaultdict(list)
         for data in tqdm(dataloader):
-            query_responses = torch.cat(
-                [data["query_response0_token"].unsqueeze(1), data["query_response1_token"].unsqueeze(1)], dim=1
-            ).flatten(0, 1)
-            mb_best = data["choice"]
-            # mb_query = data["query_token"]
-            # mb_responses = torch.cat([data[f"response0_token"].unsqueeze(1), data[f"response1_token"].unsqueeze(1)], dim=1)
-            # mb_query_tiled = mb_query.unsqueeze(1).repeat(1, args.label.num_labels, 1)
-            # query_responses = torch.cat([mb_query_tiled, mb_responses], dim=2).flatten(0, 1)
-            predicted_reward = get_reward(model, query_responses, tokenizer)
-            predicted_reward = predicted_reward.view(-1, args.label.num_labels)
-            accuracy = (predicted_reward.argmax(1) == mb_best).float()
-
+            query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
+            with accelerator.accumulate(model):
+                predicted_reward = get_reward(model, query_responses, tokenizer)
+                chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
+                rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
+                accuracy = (chosen_rewards > rejected_rewards).float()
             for k in data:
                 data[k] = gather_object(data[k])
             for i in range(len(accuracy)):
                 items["query"].append(tokenizer.decode(data["query_token"][i], skip_special_tokens=True))
-                items["response0"].append(tokenizer.decode(data["response0_token"][i]))
-                items["response1"].append(tokenizer.decode(data["response1_token"][i]))
+                items["chosen"].append(tokenizer.decode(data["chosen_token"][i]))
+                items["rejected"].append(tokenizer.decode(data["rejected_token"][i]))
                 items["batch"].append(data["batch"][i])
                 items["split"].append(data["split"][i])
                 items["confidence"].append(data["extra.confidence"][i].item())
                 items["choice"].append(data["choice"][i].item())
                 items["policies"].append(data["policies"][i])
-                items["response0_policy"].append(data["response0_policy"][i])
-                items["response1_policy"].append(data["response1_policy"][i])
+                items["chosen_policy"].append(data["chosen_policy"][i])
+                items["rejected_policy"].append(data["rejected_policy"][i])
                 items["accuracy"].append(accuracy[i].item())
     model.train()
     return pd.DataFrame(items)
@@ -262,27 +251,21 @@ def evaluate(args: Args, accelerator, tokenizer, model, dataloader):
 
 # def train(args: Args):
 if __name__ == "__main__":
-    args = tyro.cli(Args)
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    args, accelerator = parse_args()
     local_seed = args.seed + accelerator.process_index * 100003  # Prime
-    args.world_size = accelerator.num_processes
-    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
-    args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
-    args.batch_size = int(args.local_batch_size * args.world_size)
 
     # load dataset
     dataset = load_dataset(args.label_dataset, split="train")
     dataset = dataset.shuffle(seed=local_seed)
-    dataset = dataset.select(range(args.label.num_train))
+    dataset = dataset.select(range(args.num_train))
     dataset = dataset.with_format(
         "torch",
         columns=[
             "query_token",
-            "choice",
-            "response0_token",
-            "query_response0_token",
-            "response1_token",
-            "query_response1_token",
+            "chosen_token",
+            "query_chosen_token",
+            "rejected_token",
+            "query_rejected_token",
             "batch",
             "split",
         ],
@@ -297,15 +280,15 @@ if __name__ == "__main__":
             columns=[
                 "query_token",
                 "choice",
-                "response0_token",
-                "query_response0_token",
-                "response1_token",
-                "query_response1_token",
+                "chosen_token",
+                "query_chosen_token",
+                "rejected_token",
+                "query_rejected_token",
                 "batch",
                 "split",
                 "extra.confidence",
-                "response0_policy",
-                "response1_policy",
+                "chosen_policy",
+                "rejected_policy",
                 "policies",
             ],
         )
@@ -316,8 +299,14 @@ if __name__ == "__main__":
     args.total_episodes = len(dataset)
     args.num_updates = args.total_episodes // args.batch_size
 
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.base_model,
+        padding_side="right",
+        trust_remote_code=True,
+    )
+    # we use the padding token manually but do not resize the token embedding of the model
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     console = Console(force_terminal=True)
-    run_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SimpleNamespace()  # dummy writer
     writer.add_scalar = lambda x, y, z: None
     if accelerator.is_main_process:
@@ -329,12 +318,12 @@ if __name__ == "__main__":
                 entity=args.wandb_entity,
                 sync_tensorboard=True,
                 config=asdict(args),
-                name=run_name,
+                name=args.run_name,
                 save_code=True,
             )
             file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
             wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
-        writer = SummaryWriter(f"runs/{run_name}")
+        writer = SummaryWriter(f"runs/{args.run_name}")
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -345,17 +334,9 @@ if __name__ == "__main__":
     np.random.seed(local_seed)
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.base_model,
-        padding_side="right",
-        trust_remote_code=True,
-    )
-    # we use the padding token manually but do not resize the token embedding of the model
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    model_config = AutoConfig.from_pretrained(args.base_model)
-    configure_dropout(model_config, args.dropout_layer_keys, 0.0)  # disable dropout
+    model_config = AutoConfig.from_pretrained(args.sft_model_path)
     scalar_model_config = ScalarModelConfig(
-        base_model=args.base_model,
+        base_model=args.sft_model_path,
         base_config=model_config,
         hidden_size=model_config.hidden_size,
     )
@@ -366,6 +347,7 @@ if __name__ == "__main__":
             args.reward_model_path,
             trust_remote_code=True,
         )
+    disable_dropout(model)
     if accelerator.is_main_process:
         pprint(model_config)
     if args.optimizer == "adam":
@@ -379,12 +361,12 @@ if __name__ == "__main__":
         num_training_steps=args.num_updates * args.num_train_epochs,
     )
 
-    if args.deepspeed:
-        deepspeed_states = AcceleratorState().deepspeed_plugin
-        deepspeed_states.deepspeed_config["train_micro_batch_size_per_gpu"] = args.local_micro_batch_size
-
+    # sync random states for DataLoader(shuffle=True) before `accelerator.prepare`
+    # see https://gist.github.com/vwxyzjn/2581bff1e48e185e0b85b6dfe1def79c
+    torch.manual_seed(args.seed)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     eval_dataloaders = {split: accelerator.prepare(eval_dataloader) for split, eval_dataloader in eval_dataloaders.items()}
+    torch.manual_seed(local_seed)  # reset the local seed again
 
     accelerator.print("===training model===")
     losses = torch.zeros((args.gradient_accumulation_steps,), device=device)
@@ -400,31 +382,20 @@ if __name__ == "__main__":
         for data in dataloader:
             update += 1
             global_step += args.micro_batch_size
-            query_responses = torch.cat(
-                [data["query_response0_token"].unsqueeze(1), data["query_response1_token"].unsqueeze(1)], dim=1
-            ).flatten(0, 1)
-            mb_best = data["choice"]
-            # mb_query = data["query_token"]
-            # mb_responses = torch.cat([data[f"response0_token"].unsqueeze(1), data[f"response1_token"].unsqueeze(1)], dim=1)
-            # mb_query_tiled = mb_query.unsqueeze(1).repeat(1, args.label.num_labels, 1)
-            # query_responses = torch.cat([mb_query_tiled, mb_responses], dim=2).flatten(0, 1)
+            query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
             with accelerator.accumulate(model):
                 predicted_reward = get_reward(model, query_responses, tokenizer)
-                predicted_reward = predicted_reward.view(-1, args.label.num_labels)
-                accuracy = (predicted_reward.argmax(1) == mb_best).float().mean()
-                reward_preferred = predicted_reward.gather(1, mb_best.view(-1, 1)).view(-1)
-                reward_rejected = predicted_reward.gather(1, (1 - mb_best).view(-1, 1)).view(-1)
-                if args.logsigmoid:
-                    loss = -F.logsigmoid(reward_preferred - reward_rejected).mean()
-                else:
-                    loss = F.cross_entropy(predicted_reward, mb_best)
+                chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
+                rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
+                accuracy = (chosen_rewards > rejected_rewards).float().mean()
+                loss = -F.logsigmoid(chosen_rewards - rejected_rewards).mean()
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
             losses[gradient_accumulation_idx] = loss
             accuracies[gradient_accumulation_idx] = accuracy
-            reward_preferreds[gradient_accumulation_idx] = reward_preferred.mean()
-            reward_rejecteds[gradient_accumulation_idx] = reward_rejected.mean()
+            reward_preferreds[gradient_accumulation_idx] = chosen_rewards.mean()
+            reward_rejecteds[gradient_accumulation_idx] = rejected_rewards.mean()
             gradient_accumulation_idx = (gradient_accumulation_idx + 1) % args.gradient_accumulation_steps
             if update > 1 and (update - 1) % args.gradient_accumulation_steps == 0:
                 scheduler.step()
@@ -432,9 +403,9 @@ if __name__ == "__main__":
                 writer.add_scalar("train/rm/loss", accelerator.gather(losses).mean().item(), global_step)
                 writer.add_scalar("train/rm/accuracy", train_accuracy, global_step)
                 writer.add_scalar(
-                    "train/rm/reward_preferred", accelerator.gather(reward_preferreds).mean().item(), global_step
+                    "train/rm/chosen_rewards", accelerator.gather(reward_preferreds).mean().item(), global_step
                 )
-                writer.add_scalar("train/rm/reward_rejected", accelerator.gather(reward_rejecteds).mean().item(), global_step)
+                writer.add_scalar("train/rm/rejected_rewards", accelerator.gather(reward_rejecteds).mean().item(), global_step)
                 writer.add_scalar("train/rm/lr", scheduler.get_last_lr()[0], global_step)
                 accelerator.print(
                     f"{train_accuracy=}, {scheduler.get_last_lr()=}, {optimizer.param_groups[0]['lr']=}, {update=}"
@@ -455,14 +426,14 @@ if __name__ == "__main__":
             writer.add_scalar(f"eval/rm/{eval_split}/accuracy", evaluate_df["accuracy"].mean(), global_step)
             accelerator.print(f"eval/rm/{eval_split}/accuracy: {evaluate_df['accuracy'].mean()}")
             if accelerator.is_main_process:
-                os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
-                evaluate_df.to_csv(f"eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
+                os.makedirs(f"eval_tables/{args.run_name}", exist_ok=True)
+                evaluate_df.to_csv(f"eval_tables/{args.run_name}/eval_{eval_split}_{update}.csv")
                 if args.track:
                     wandb.log({f"samples/{eval_split}/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
             del evaluate_df
             torch.cuda.empty_cache()
 
-    norm_dataset = load_dataset(args.task.query_dataset, split="train")
+    norm_dataset = load_dataset(args.query_dataset, split="train")
     norm_dataset = norm_dataset.with_format("torch", columns=["query_token", "reference_response_token"])
     norm_dataset = norm_dataset.shuffle(seed=local_seed)
     norm_dataloader = DataLoader(norm_dataset, batch_size=args.local_eval_batch_size)
@@ -484,8 +455,8 @@ if __name__ == "__main__":
 
     if accelerator.is_main_process:
         norm_df = pd.DataFrame(items)
-        os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
-        norm_df.to_csv(f"eval_tables/{run_name}/eval_{update}_normalized.csv")
+        os.makedirs(f"eval_tables/{args.run_name}", exist_ok=True)
+        norm_df.to_csv(f"eval_tables/{args.run_name}/eval_{update}_normalized.csv")
         if args.track:
             wandb.log({"samples/normalized": wandb.Table(dataframe=norm_df)}, step=update)
         stats = {
@@ -507,10 +478,9 @@ if __name__ == "__main__":
         repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
 
         if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir, repo_id=repo_id)
+            tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
-                tokenizer.push_to_hub(repo_id, revision=f"seed{args.seed}_{str(time_int)}")
-
+                tokenizer.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision)
         unwrapped: PreTrainedModel = accelerator.unwrap_model(model)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
@@ -521,10 +491,10 @@ if __name__ == "__main__":
                 save_function=accelerator.save,
                 state_dict=accelerator.get_state_dict(model),
                 safe_serialization=False,
-                repo_id=repo_id,
             )
             if args.push_to_hub:
-                unwrapped.push_to_hub(repo_id, revision=f"seed{args.seed}_{str(time_int)}", safe_serialization=False)
+                unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
+                accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")
 
 # if __name__ == "__main__":
 #     args = tyro.cli(Args)

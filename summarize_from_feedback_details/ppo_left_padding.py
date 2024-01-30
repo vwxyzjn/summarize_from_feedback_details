@@ -14,7 +14,7 @@ import torch.optim as optim
 import tyro
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
-from accelerate.utils import gather_object
+from accelerate.utils import gather_object, broadcast
 from datasets import load_dataset
 from rich.console import Console
 from rich.pretty import pprint
@@ -32,7 +32,9 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
 )
+from huggingface_hub import HfApi
 
+api = HfApi()
 INVALID_LOGPROB = 1.0
 
 
@@ -64,43 +66,6 @@ class PpoHParams:
 
 
 @dataclass
-class TaskHParams:
-    # Query params
-    query_length: int = 512
-    query_dataset: str = "vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_pythia-160m_53"
-
-    query_format_str: Optional[str] = "SUBREDDIT: r/{subreddit}\n\nTITLE: {title}\n\nPOST: {post}\n\nTL;DR:"
-    query_truncate_field: Optional[str] = "post"
-    query_truncate_text: Optional[str] = "\n"
-    query_padding: Optional[str] = None  # defaults to repeated spaces
-    query_pad_side: Optional[str] = "left"
-
-    # Response params
-    response_length: int = 53
-
-    # Truncate response after the first occurrence of this token at or after index after when sampling.
-    truncate_token: Literal["eos"] = "eos"
-    truncate_token_id: Optional[int] = None
-    truncate_after: int = 16
-    penalty_reward_value: int = -1
-
-    # LM params
-    temperature: float = 0.7
-
-
-# a patch
-@dataclass
-class TaskQueryHParams:
-    length: int = None
-    dataset: str = None
-    format_str: Optional[str] = None  # if underlying dataset yields dicts, can format arbitrarily
-    truncate_field: Optional[str] = None
-    truncate_text: Optional[str] = None
-    padding: Optional[str] = None  # defaults to repeated spaces
-    pad_side: Optional[str] = None
-
-
-@dataclass
 class Args:
     # common args
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -120,9 +85,13 @@ class Args:
     load_from_cache_file: bool = False
     """Whether to load data from the local cache file in `dataset.map`"""
     push_to_hub: bool = False
-    "whether to upload the saved model to huggingface"
-    hf_entity: str = ""
-    "the user or org name of the model repository from the Hugging Face Hub"
+    """whether to upload the saved model to huggingface"""
+    hf_entity: Optional[str] = None
+    """the user or org name of the model repository from the Hugging Face Hub"""
+    hf_repo_id: Optional[str] = None
+    """the id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    hf_repo_revision: Optional[str] = None
+    """the revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
     deepspeed: bool = False
     """Whether to use deepspeed to train the model"""
     print_sample_output_freq: int = 220
@@ -133,7 +102,7 @@ class Args:
     # optimizer args
     eps: float = 1e-5
     """the epsilon value for the optimizer"""
-    lr: float = 0.00001
+    lr: float = 3e-6
     """the learning rate"""
     optimizer: Literal["adam", "adamw"] = "adamw"
     """Which optimizer to use"""
@@ -174,30 +143,67 @@ class Args:
     # other args
     base_model: str = "EleutherAI/pythia-160m"
     """the name of the pretrained model to use"""
+    query_dataset: str = "vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144"
+    """the query dataset"""
+    response_length: int = 53
+    """the length of the response"""
+    truncate_token: Literal["eos"] = "eos"
+    """the truncate token"""
+    truncate_token_id: Optional[int] = None
+    """the truncation token id"""
+    penalty_reward_value: int = -1
+    """the reward value for responses that do not contain `truncate_token_id`"""
+    temperature: float = 0.7
+    """the sampling temperature"""
     offload: bool = False
     """Whether to offload ref policy and reward model to CPU"""
     reward_model_path: str = ""
-    """the name of the pretrained model to use"""
+    """the path to the reward model"""
     sft_model_path: str = "EleutherAI/pythia-160m"
-    """the name of the pretrained model to use"""
-    dropout_layer_keys: List[str] = field(
-        default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
-    )
-    """Which layers to apply dropout to"""
+    """the path to the sft model"""
     output_dir: str = "models/ppo_model"
     """Where to save the model"""
-    task: TaskHParams = field(default_factory=TaskHParams)
     reward: RewardHParams = field(default_factory=RewardHParams)
     ppo: PpoHParams = field(default_factory=PpoHParams)
 
 
-# taken from https://github.com/microsoft/DeepSpeedExamples/blob/737c6740bec38b77a24a59135b6481a53d566b38/applications/DeepSpeed-Chat/training/utils/model/model_utils.py#L20C1-L26C52
-def configure_dropout(model_config, dropout_layer_keys, dropout):
-    if dropout is not None:
-        for key in dropout_layer_keys:
-            if hasattr(model_config, key):
-                print(f"Setting model_config.{key} to {dropout}")
-                setattr(model_config, key, dropout)
+def parse_args() -> tuple[Args, Accelerator]:
+    args = tyro.cli(Args)
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    args.world_size = accelerator.num_processes
+    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
+    args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
+    args.batch_size = int(args.local_batch_size * args.world_size)
+    args.mini_batch_size = exact_div(args.batch_size, args.nminibatches)
+    args.local_mini_batch_size = exact_div(args.local_batch_size, args.nminibatches)
+    if args.ppo.whiten_rewards:
+        assert (
+            args.local_mini_batch_size >= 8
+        ), f"Per-rank minibatch size {args.local_mini_batch_size} is insufficient for whitening"
+    # `per_rank_rollout_batch_size` is our `args.local_batch_size`
+    # `per_rank_minibatch_size` is our `args.local_mini_batch_size`
+    args.ppo.num_updates = args.total_episodes // args.batch_size
+    time_tensor = torch.tensor(int(time.time()), device=accelerator.device)
+    time_int = broadcast(time_tensor, 0).item()  # avoid different timestamps across processes
+    args.run_name = f"{args.exp_name}__{args.seed}__{time_int}"
+    if args.push_to_hub:
+        if args.hf_repo_id is None: # auto-generate one
+            args.hf_repo_id = f"{args.base_model.replace('/', '_')}__{args.exp_name}__tldr"
+        if args.hf_entity is None:  # find the current user
+            args.hf_entity = api.whoami()["name"]
+        if "/" not in args.hf_repo_id: # prepend the current user
+            args.hf_repo_id = f"{args.hf_entity}/{args.hf_repo_id}"
+        if args.hf_repo_revision is None:  # auto-generate one
+            args.hf_repo_revision = args.run_name
+    return args, accelerator
+
+
+# taken from https://github.com/vwxyzjn/direct-preference-optimization/blob/f8b8c0f49dc92a430bae41585f9d467d3618fe2f/utils.py#L99
+def disable_dropout(model: torch.nn.Module):
+    """Disable dropout in a model."""
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0
 
 
 def print_rich_table(title: str, df: pd.DataFrame, console: Console) -> Table:
@@ -342,9 +348,9 @@ def first_true_indices(bools, dtype=torch.long):
 
 
 def truncate_response(args, tokenizer, responses):
-    trunc_idxs = first_true_indices(responses == args.task.truncate_token_id).unsqueeze(-1)
-    new_size = [1] * (len(responses.size()) - 1) + [args.task.response_length]
-    idxs = torch.arange(args.task.response_length, device=responses.device).view(*new_size)
+    trunc_idxs = first_true_indices(responses == args.truncate_token_id).unsqueeze(-1)
+    new_size = [1] * (len(responses.size()) - 1) + [args.response_length]
+    idxs = torch.arange(args.response_length, device=responses.device).view(*new_size)
     postprocessed_responses = torch.masked_fill(responses, idxs > trunc_idxs, tokenizer.pad_token_id)
     return postprocessed_responses
 
@@ -425,22 +431,20 @@ def evaluate(args: Args, reward_model, policy, tokenizer, dataloader, generation
 
 # def train(args: Args):
 if __name__ == "__main__":
-    args = tyro.cli(Args)
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    args, accelerator = parse_args()
     local_seed = args.seed + accelerator.process_index * 100003  # Prime
-    args.world_size = accelerator.num_processes
-    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
-    args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
-    args.batch_size = int(args.local_batch_size * args.world_size)
-    args.mini_batch_size = exact_div(args.batch_size, args.nminibatches)
-    args.local_mini_batch_size = exact_div(args.local_batch_size, args.nminibatches)
-    if args.ppo.whiten_rewards:
-        assert (
-            args.local_mini_batch_size >= 8
-        ), f"Per-rank minibatch size {args.local_mini_batch_size} is insufficient for whitening"
-    # `per_rank_rollout_batch_size` is our `args.local_batch_size`
-    # `per_rank_minibatch_size` is our `args.local_mini_batch_size`
-    args.ppo.num_updates = args.total_episodes // args.batch_size
+
+    # load dataset
+    dataset = load_dataset(args.query_dataset, split="train")
+    dataset = dataset.with_format("torch", columns=["query_token", "reference_response_token"])
+    dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
+    validation_dataset = load_dataset(args.query_dataset, split="validation")
+    eval_dataloaders = {}
+    for split in ["validation", "test"]:
+        eval_dataset = load_dataset(args.query_dataset, split=split)
+        eval_dataset = eval_dataset.with_format("torch", columns=["query_token", "reference_response_token"])
+        eval_dataloaders[split] = DataLoader(eval_dataset, batch_size=args.local_eval_batch_size)
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.base_model,
         padding_side="right",
@@ -448,11 +452,10 @@ if __name__ == "__main__":
     )
     # we use the padding token manually but do not resize the token embedding of the model
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if args.task.truncate_token == "eos":
-        args.task.truncate_token_id = tokenizer.eos_token_id
+    if args.truncate_token == "eos":
+        args.truncate_token_id = tokenizer.eos_token_id
 
     console = Console(force_terminal=True)
-    run_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SimpleNamespace()  # dummy writer
     writer.add_scalar = lambda x, y, z: None
     writer.add_histogram = lambda x, y, z: None
@@ -465,12 +468,12 @@ if __name__ == "__main__":
                 entity=args.wandb_entity,
                 sync_tensorboard=True,
                 config=asdict(args),
-                name=run_name,
+                name=args.run_name,
                 save_code=True,
             )
             file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
             wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
-        writer = SummaryWriter(f"runs/{run_name}")
+        writer = SummaryWriter(f"runs/{args.run_name}")
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -481,9 +484,7 @@ if __name__ == "__main__":
     np.random.seed(local_seed)
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
-
     model_config = AutoConfig.from_pretrained(args.base_model)
-    configure_dropout(model_config, args.dropout_layer_keys, 0.0)  # disable dropout
     scalar_model_config = ScalarModelConfig(
         base_model=args.base_model,
         base_config=model_config,
@@ -507,6 +508,8 @@ if __name__ == "__main__":
     # each class should have a separate pretrained model that do not share weights
     ref_policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
     policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
+    for module in [policy, ref_policy, critic, reward_model]:
+        disable_dropout(module)
     # critic.lm_backbone.gradient_checkpointing_enable()
     # policy.gradient_checkpointing_enable()
     accelerator.print(policy)
@@ -519,17 +522,11 @@ if __name__ == "__main__":
     elif args.optimizer == "adamw":
         optimizer = optim.AdamW(model.parameters(), lr=args.lr, eps=args.eps)
 
-    dataset = load_dataset(args.task.query_dataset, split="train")
-    validation_dataset = load_dataset(args.task.query_dataset, split="validation")
-    dataset = dataset.with_format("torch", columns=["query_token", "reference_response_token"])
-    dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
-    validation_dataset = validation_dataset.with_format("torch", columns=["query_token", "reference_response_token"])
-    validation_dataloader = DataLoader(validation_dataset, batch_size=args.local_eval_batch_size)
-
     # sync random states for DataLoader(shuffle=True) before `accelerator.prepare`
     # see https://gist.github.com/vwxyzjn/2581bff1e48e185e0b85b6dfe1def79c
     torch.manual_seed(args.seed)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+    eval_dataloaders = {split: accelerator.prepare(eval_dataloader) for split, eval_dataloader in eval_dataloaders.items()}
     torch.manual_seed(local_seed)  # reset the local seed again
 
     def repeat_generator():
@@ -537,7 +534,6 @@ if __name__ == "__main__":
             yield from dataloader
 
     iter_dataloader = iter(repeat_generator())
-    validation_dataloader = accelerator.prepare(validation_dataloader)
     if args.deepspeed:
         import deepspeed
 
@@ -570,17 +566,17 @@ if __name__ == "__main__":
     # WARNING: even with `max_new_tokens` and `min_new_tokens` set to the same value, the number of tokens generated
     # may not be the same. TODO: investigate further, we just want to generate a fixed number of tokens
     generation_config = GenerationConfig(
-        max_new_tokens=args.task.response_length,
-        min_new_tokens=args.task.response_length,
-        temperature=(args.task.temperature + 1e-7),
+        max_new_tokens=args.response_length,
+        min_new_tokens=args.response_length,
+        temperature=(args.temperature + 1e-7),
         top_k=0.0,
         top_p=1.0,
         do_sample=True,
     )
     # use the same `0.01` temperature for validation response generation https://github.com/openai/summarize-from-feedback/blob/700967448d10004279f138666442bf1497d0e705/exps/sample.py#L27
     validation_generation_config = GenerationConfig(
-        max_new_tokens=args.task.response_length,
-        min_new_tokens=args.task.response_length,
+        max_new_tokens=args.response_length,
+        min_new_tokens=args.response_length,
         temperature=(0.01 + 1e-7),
         top_k=0.0,
         top_p=1.0,
@@ -590,6 +586,7 @@ if __name__ == "__main__":
     accelerator.print("===training policy===")
     global_step = 0
     start_time = time.time()
+    eval_split = "validation"
     stats_shape = (args.ppo.noptepochs, args.nminibatches, args.gradient_accumulation_steps)
     approxkl_stats = torch.zeros(stats_shape, device=device)
     pg_clipfrac_stats = torch.zeros(stats_shape, device=device)
@@ -611,15 +608,15 @@ if __name__ == "__main__":
                 reward_model,
                 accelerator.unwrap_model(model).policy,
                 tokenizer,
-                validation_dataloader,
+                eval_dataloaders[eval_split],
                 validation_generation_config,
             )
             validation_score = eval_storage.score[0]
             if args.print_sample_output_freq > 0 and (update - 1) % args.print_sample_output_freq == 0:
                 if accelerator.is_main_process:
-                    eval_df.to_csv(f"runs/{run_name}/table_{global_step}.csv")
+                    eval_df.to_csv(f"runs/{args.run_name}/{eval_split}_table_{global_step}.csv")
                     if args.track:
-                        wandb.log({"samples/query_responses": wandb.Table(dataframe=eval_df)}, step=update)
+                        wandb.log({f"samples/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
                     else:
                         try:
                             print_rich_table(f"Sample Output at Step {update}", eval_df[:1], console)
@@ -650,7 +647,7 @@ if __name__ == "__main__":
 
                 output = forward(accelerator.unwrap_model(model).policy, query_response, tokenizer)
                 logits = output.logits[:, context_length - 1 : -1]
-                logits /= args.task.temperature + 1e-7
+                logits /= args.temperature + 1e-7
                 all_logprob = F.log_softmax(logits, dim=-1)
                 logprob = torch.gather(all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
                 del output, logits, all_logprob
@@ -658,7 +655,7 @@ if __name__ == "__main__":
 
                 ref_output = forward(ref_policy, query_response, tokenizer)
                 ref_logits = ref_output.logits[:, context_length - 1 : -1]
-                ref_logits /= args.task.temperature + 1e-7
+                ref_logits /= args.temperature + 1e-7
                 ref_all_logprob = F.log_softmax(ref_logits, dim=-1)
                 ref_logprob = torch.gather(ref_all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
                 del ref_output, ref_logits, ref_all_logprob
@@ -699,7 +696,7 @@ if __name__ == "__main__":
             # responses not passing that filter will receive a low (fixed) score
             # only query humans on responses that pass that filter
             contain_pad_token = torch.any(postprocessed_responses == tokenizer.pad_token_id, dim=-1)
-            scores = torch.where(contain_pad_token, scores, torch.full_like(scores, args.task.penalty_reward_value))
+            scores = torch.where(contain_pad_token, scores, torch.full_like(scores, args.penalty_reward_value))
             accelerator.print(f"{scores=}, {(contain_pad_token.sum() / len(contain_pad_token))=}")
 
             # 4. compute rewards
@@ -717,7 +714,7 @@ if __name__ == "__main__":
             # 6. compute advantages and returns
             lastgaelam = 0
             advantages_reversed = []
-            gen_length = args.task.response_length
+            gen_length = args.response_length
             for t in reversed(range(gen_length)):
                 nextvalues = values[:, t + 1] if t < gen_length - 1 else 0.0
                 delta = rewards[:, t] + args.ppo.gamma * nextvalues - values[:, t]
@@ -755,7 +752,7 @@ if __name__ == "__main__":
 
                         output, vpred_temp = forward(model, mb_query_responses, tokenizer)
                         logits = output.logits[:, context_length - 1 : -1]
-                        logits /= args.task.temperature + 1e-7
+                        logits /= args.temperature + 1e-7
                         new_all_logprobs = F.log_softmax(logits, dim=-1)
                         new_logprobs = torch.gather(new_all_logprobs, 2, mb_responses.unsqueeze(-1)).squeeze(-1)
                         vpred = vpred_temp[:, context_length - 1 : -1].squeeze(-1)
@@ -874,33 +871,28 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
 
     if args.run_eval:
-        eval_storage, eval_df = evaluate(
-            args,
-            reward_model,
-            accelerator.unwrap_model(model).policy,
-            tokenizer,
-            validation_dataloader,
-            validation_generation_config,
-            sampling=False,
-        )
-        if accelerator.is_main_process:
-            eval_df.to_csv(f"runs/{run_name}/table.csv")
-            if args.track:
-                wandb.log({"eval/query_responses": wandb.Table(dataframe=eval_df)}, step=update)
+        for eval_split in eval_dataloaders:
+            eval_storage, eval_df = evaluate(
+                args,
+                reward_model,
+                accelerator.unwrap_model(model).policy,
+                tokenizer,
+                eval_dataloaders[eval_split],
+                validation_generation_config,
+                sampling=False,
+            )
+            if accelerator.is_main_process:
+                eval_df.to_csv(f"runs/{args.run_name}/{eval_split}_table.csv")
+                if args.track:
+                    wandb.log({f"eval/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
 
     # save model
     if args.output_dir and args.num_train_epochs > 0:
         os.makedirs(os.path.dirname(args.output_dir), exist_ok=True)
-        time_tensor = torch.tensor([int(time.time())], device=device)
-        time_int = accelerator.gather(time_tensor)[0].item()  # avoid different timestamps across processes
-        repo_name = f"{args.base_model.replace('/', '_')}__{args.exp_name}__tldr"
-        repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-
         if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir, repo_id=repo_id)
+            tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
-                tokenizer.push_to_hub(repo_id, revision=f"seed{args.seed}_{str(time_int)}")
-
+                tokenizer.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision)
         unwrapped: PreTrainedModel = accelerator.unwrap_model(model).policy
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
@@ -910,10 +902,10 @@ if __name__ == "__main__":
                 save_function=accelerator.save,
                 state_dict=accelerator.get_state_dict(unwrapped),
                 safe_serialization=False,
-                repo_id=repo_id,
             )
             if args.push_to_hub:
-                unwrapped.push_to_hub(repo_id, revision=f"seed{args.seed}_{str(time_int)}", safe_serialization=False)
+                unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
+                accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")
 
 # if __name__ == "__main__":
 #     args = tyro.cli(Args)
