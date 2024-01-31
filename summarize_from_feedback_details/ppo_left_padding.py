@@ -54,7 +54,6 @@ class RewardHParams:
 
 @dataclass
 class PpoHParams:
-    num_updates: tyro.conf.Suppress[int] = None
     nminibatches: int = 1
     noptepochs: int = 4
     vf_coef: float = 0.1
@@ -187,7 +186,7 @@ def parse_args() -> tuple[Args, Accelerator]:
         ), f"Per-rank minibatch size {args.local_mini_batch_size} is insufficient for whitening"
     # `per_rank_rollout_batch_size` is our `args.local_batch_size`
     # `per_rank_minibatch_size` is our `args.local_mini_batch_size`
-    args.ppo.num_updates = args.total_episodes // args.batch_size
+    args.num_updates = args.total_episodes // args.batch_size
     time_tensor = torch.tensor(int(time.time()), device=accelerator.device)
     time_int = broadcast(time_tensor, 0).item()  # avoid different timestamps across processes
     args.run_name = f"{args.exp_name}__{args.seed}__{time_int}"
@@ -337,8 +336,10 @@ def generate(lm_backbone, queries, tokenizer, generation_config):
         # position_ids=attention_mask.cumsum(1) - attention_mask.long(), # generation collapsed if this was turned on. TODO: why does generation collapse with this?
         generation_config=generation_config,
         return_dict_in_generate=True,
+        output_scores=True
     )
-    return torch.cat((queries, output.sequences[:, context_length:]), dim=1)
+    logits = torch.stack(output.scores, 1)
+    return torch.cat((queries, output.sequences[:, context_length:]), dim=1), logits
 
 
 def first_true_indices(bools, dtype=torch.long):
@@ -397,7 +398,7 @@ def evaluate(args: Args, reward_model, policy, tokenizer, dataloader, generation
             query_reference_responses = torch.cat((data["query_token"], data["reference_response_token"]), dim=1)
             _, reference_score, _ = get_reward(reward_model, query_reference_responses, tokenizer, queries.shape[1])
 
-            query_responses = generate(
+            query_responses, _ = generate(
                 policy,
                 queries,
                 tokenizer,
@@ -513,8 +514,8 @@ if __name__ == "__main__":
     # each class should have a separate pretrained model that do not share weights
     ref_policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
     policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
-    for module in [policy, ref_policy, critic, reward_model]:
-        disable_dropout(module)
+    # for module in [policy, ref_policy, critic, reward_model]:
+    #     disable_dropout(module)
     # critic.lm_backbone.gradient_checkpointing_enable()
     # policy.gradient_checkpointing_enable()
     accelerator.print(policy)
@@ -601,9 +602,9 @@ if __name__ == "__main__":
     entropy_stats = torch.zeros(stats_shape, device=device)
     ratio_stats = torch.zeros(stats_shape, device=device)
     model.train()
-    for update in range(1, args.ppo.num_updates + 1):
+    for update in range(1, args.num_updates + 1):
         global_step += 1 * args.batch_size
-        frac = 1.0 - (update - 1.0) / args.ppo.num_updates
+        frac = 1.0 - (update - 1.0) / args.num_updates
         lrnow = frac * args.lr
         optimizer.param_groups[0]["lr"] = lrnow
         data = next(iter_dataloader)
@@ -642,7 +643,7 @@ if __name__ == "__main__":
             sequence_lengths = []
             for i in range(0, queries.shape[0], args.local_rollout_forward_batch_size):
                 query = queries[i : i + args.local_rollout_forward_batch_size]
-                query_response = generate(
+                query_response, logits = generate(
                     accelerator.unwrap_model(model).policy,
                     query,
                     tokenizer,
@@ -650,12 +651,13 @@ if __name__ == "__main__":
                 )
                 response = query_response[:, context_length:]
 
-                output = forward(accelerator.unwrap_model(model).policy, query_response, tokenizer)
-                logits = output.logits[:, context_length - 1 : -1]
-                logits /= args.temperature + 1e-7
+                # use the logits during generation directly, instead of using the following
+                # output = forward(accelerator.unwrap_model(model).policy, query_response, tokenizer)
+                # logits = output.logits[:, context_length - 1 : -1]
+                # logits /= args.temperature + 1e-7
                 all_logprob = F.log_softmax(logits, dim=-1)
                 logprob = torch.gather(all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
-                del output, logits, all_logprob
+                del logits, all_logprob
                 torch.cuda.empty_cache()
 
                 ref_output = forward(ref_policy, query_response, tokenizer)
@@ -791,26 +793,6 @@ if __name__ == "__main__":
                             vf_clipfrac_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = vf_clipfrac
                             entropy_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = entropy.mean()
                             ratio_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = ratio.mean()
-                        # if ppo_epoch_idx == 0 and micro_batch_start == 0:
-                        #     torch.testing.assert_close(ratio, torch.zeros_like(ratio) + 1, atol=1e-4, rtol=1e-4)
-                        # if ppo_epoch_idx == 0:
-                        #     pprint({
-                        #         # "responses": responses,
-                        #         # "values": values,
-                        #         "rewards": rewards,
-                        #         # "scores": scores,
-                        #         "advantages": advantages,
-                        #         # "ratio": ratio,
-                        #         # "pg_losses": pg_losses,
-                        #         # "approxkl": approxkl,
-                        #         # "pg_loss": pg_loss,
-                        #         # "pg_clipfrac": pg_clipfrac,
-                        #         # "ratio": ratio.mean(),
-                        #         # "vf_loss": vf_loss,
-                        #         # "vf_clipfrac": vf_clipfrac,
-                        #         # "entropy": masked_mean(entropy, ~padding_mask[micro_batch_inds]),
-                        #     })
-                        #     breakpoint()
                     gradient_accumulation_idx += 1
                 minibatch_idx += 1
                 if accelerator.is_main_process:

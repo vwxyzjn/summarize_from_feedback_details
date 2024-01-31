@@ -428,7 +428,7 @@ if __name__ == "__main__":
             writer.add_scalar(f"{eval_split}/sft/loss", torch.stack(all_eval_losses).mean().item(), update)
 
     # save model
-    if args.output_dir:
+    if args.output_dir and args.num_train_epochs > 0:
         os.makedirs(os.path.dirname(args.output_dir), exist_ok=True)
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
