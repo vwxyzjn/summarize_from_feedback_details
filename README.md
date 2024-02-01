@@ -26,8 +26,8 @@ To run a hello world example, you can run the `hello_world.sh` script. For the f
 ```
 mkdir -p slurm/logs
 sft_job_id=$(sbatch --parsable sbatches/sft.sbatch)
-rm_job_id=$(sbatch --parsable sbatches/reward.sbatch)
-rlhf_job_id=$(sbatch --parsable sbatches/ppo_left_padding.sbatch)
+rm_job_id=$(sbatch --parsable --dependency=afterany:$sft_job_id sbatches/reward.sbatch)
+ppo_job_id=$(sbatch --parsable --dependency=afterany:$rm_job_id sbatches/ppo_left_padding.sbatch)
 ```
 
 The command above runs end-to-end RLHF experiments with 4 random seeds. We then run `eval/sft_rm_scale.py` and `eval/rlhf_scaling_plot.py` which fetch experiments and produce the following results.

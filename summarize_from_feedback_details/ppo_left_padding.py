@@ -514,8 +514,8 @@ if __name__ == "__main__":
     # each class should have a separate pretrained model that do not share weights
     ref_policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
     policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
-    # for module in [policy, ref_policy, critic, reward_model]:
-    #     disable_dropout(module)
+    for module in [policy, ref_policy, critic, reward_model]:
+        disable_dropout(module)
     # critic.lm_backbone.gradient_checkpointing_enable()
     # policy.gradient_checkpointing_enable()
     accelerator.print(policy)
