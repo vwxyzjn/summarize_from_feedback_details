@@ -14,8 +14,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from accelerate import Accelerator
-from accelerate.state import AcceleratorState
-from accelerate.utils import gather_object
+from accelerate.utils import gather_object, broadcast
 from datasets import load_dataset
 from rich.console import Console
 from rich.pretty import pprint
@@ -32,40 +31,9 @@ from transformers import (
     PreTrainedModel,
     get_scheduler,
 )
+from huggingface_hub import HfApi
 
-
-@dataclass
-class LabelHParams:
-    type: Optional[str] = None
-    num_train: int = 92832
-    num_labels: int = 2
-    source: Optional[str] = None
-
-
-# a patch
-@dataclass
-class TaskHParams:
-    # Query params
-    query_length: int = 512
-    query_dataset: str = "cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1705009345"
-
-    query_format_str: Optional[str] = "SUBREDDIT: r/{subreddit}\n\nTITLE: {title}\n\nPOST: {post}\n\nTL;DR:"
-    query_truncate_field: Optional[str] = "post"
-    query_truncate_text: Optional[str] = "\n"
-    query_padding: Optional[str] = None  # defaults to repeated spaces
-    query_pad_side: Optional[str] = "left"
-
-    # Response params
-    response_length: int = 53
-
-    # Truncate response after the first occurrence of this token at or after index after when sampling.
-    truncate_token: Literal["eos"] = "eos"
-    truncate_token_id: Optional[int] = None
-    truncate_after: int = 16
-    penalty_reward_value: int = -1
-
-    # LM params
-    temperature: float = 0.01
+api = HfApi()
 
 
 @dataclass
@@ -75,22 +43,12 @@ class Args:
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "tldr_summarize"
-    """the wandb's project name"""
-    wandb_entity: Optional[str] = None
-    """the entity (team) of wandb's project"""
     cuda: bool = True
     """Whether to use cuda if available."""
     run_name: Optional[str] = None
     """a unique name of this run"""
     load_from_cache_file: bool = False
     """Whether to load data from the local cache file in `dataset.map`"""
-    push_to_hub: bool = False
-    "whether to upload the saved model to huggingface"
-    hf_entity: str = ""
-    "the user or org name of the model repository from the Hugging Face Hub"
     deepspeed: bool = False
     """Whether to use deepspeed to train the model"""
     print_sample_output_freq: int = 220
@@ -101,7 +59,7 @@ class Args:
     # optimizer args
     eps: float = 1e-5
     """the epsilon value for the optimizer"""
-    lr: float = 5e-6
+    lr: float = 3e-6
     """the learning rate"""
     optimizer: Literal["adam", "adamw"] = "adamw"
     """Which optimizer to use"""
@@ -110,6 +68,7 @@ class Args:
     warm_up_steps: int = 0
     """Number of warm up steps for the scheduler"""
 
+    # various batch sizes
     world_size: Optional[int] = None
     """The number of processes (GPUs) to use"""
     num_train_epochs: int = 1
@@ -120,7 +79,7 @@ class Args:
     """The number of gradient accumulation steps"""
     local_micro_batch_size: Optional[int] = 1
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
-    total_episodes: Optional[int] = None
+    total_episodes: Optional[int] = 92832
     """The total number of episodes in the dataset"""
     micro_batch_size: Optional[int] = None
     """The micro batch size across devices (HF's `per_device_train_batch_size` * `world_size`)"""
@@ -134,13 +93,17 @@ class Args:
     # other args
     base_model: str = "EleutherAI/pythia-160m"
     """the name of the pretrained model to use"""
-    dropout_layer_keys: List[str] = field(
-        default_factory=lambda: ["attn_pdrop", "embd_pdrop", "resid_pdrop", "summary_first_dropout"]
-    )
-    """Which layers to apply dropout to"""
-    output_dir: str = "models/dpo_policy_model"
-    """Where to save the model"""
-    label_dataset: str = "cleanrl/summarize_from_feedback_oai_preprocessing_1705009345"
+    query_dataset: str = "vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144"
+    """the query dataset"""
+    response_length: int = 53
+    """the length of the response"""
+    truncate_token: Literal["eos"] = "eos"
+    """the truncate token"""
+    truncate_token_id: Optional[int] = None
+    """the truncation token id"""
+    temperature: float = 0.01
+    """the sampling temperature"""
+    label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
     ipo: bool = False
     """Whether to use IPO loss https://arxiv.org/abs/2310.12036"""
@@ -148,30 +111,60 @@ class Args:
     """Label smoothing for DPO (Eq. 3 https://ericmitchell.ai/cdpo.pdf; label_smoothing=0 gives original DPO (Eq. 7 of https://arxiv.org/pdf/2305.18290.pdf))"""
     beta: float = 0.05
     """The beta value for DPO"""
-    task: TaskHParams = field(default_factory=TaskHParams)
-    label: LabelHParams = field(default_factory=LabelHParams)
+
+    # wandb and HF tracking configs
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "tldr_summarize"
+    """the wandb's project name"""
+    wandb_entity: Optional[str] = None
+    """the entity (team) of wandb's project"""
+    push_to_hub: bool = False
+    """whether to upload the saved model to huggingface"""
+    hf_entity: Optional[str] = None
+    """the user or org name of the model repository from the Hugging Face Hub"""
+    hf_repo_id: Optional[str] = None
+    """the id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    hf_repo_revision: Optional[str] = None
+    """the revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    hf_repo_url: Optional[str] = None
+    """the url of the saved model in the Hugging Face Hub (will be autoset)"""
+    output_dir: str = "models/dpo_model"
+    """Where to save the model"""
 
 
-# taken from https://github.com/microsoft/DeepSpeedExamples/blob/737c6740bec38b77a24a59135b6481a53d566b38/applications/DeepSpeed-Chat/training/utils/model/model_utils.py#L20C1-L26C52
-def configure_dropout(model_config, dropout_layer_keys, dropout):
-    if dropout is not None:
-        for key in dropout_layer_keys:
-            if hasattr(model_config, key):
-                print(f"Setting model_config.{key} to {dropout}")
-                setattr(model_config, key, dropout)
+def parse_args() -> tuple[Args, Accelerator]:
+    args = tyro.cli(Args)
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    args.world_size = accelerator.num_processes
+    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
+    args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
+    args.batch_size = int(args.local_batch_size * args.world_size)
+    time_tensor = torch.tensor(int(time.time()), device=accelerator.device)
+    time_int = broadcast(time_tensor, 0).item()  # avoid different timestamps across processes
+    args.run_name = f"{args.exp_name}__{args.seed}__{time_int}"
+    if args.push_to_hub:
+        if args.hf_repo_id is None: # auto-generate one
+            args.hf_repo_id = f"{args.base_model.replace('/', '_')}__{args.exp_name}__tldr"
+        if args.hf_entity is None:  # find the current user
+            args.hf_entity = api.whoami()["name"]
+        if "/" not in args.hf_repo_id: # prepend the current user
+            args.hf_repo_id = f"{args.hf_entity}/{args.hf_repo_id}"
+        if args.hf_repo_revision is None:  # auto-generate one
+            args.hf_repo_revision = args.run_name
+        args.hf_repo_url = f"https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}"
+    return args, accelerator
 
 
-def print_rich_table(title: str, df: pd.DataFrame, console: Console) -> Table:
-    table = Table(show_lines=True)
-    for column in df.columns:
-        table.add_column(column)
-    for _, row in df.iterrows():
-        table.add_row(*row.astype(str).tolist())
-    console.rule(f"[bold red]{title}")
-    console.print(table)
+# taken from https://github.com/vwxyzjn/direct-preference-optimization/blob/f8b8c0f49dc92a430bae41585f9d467d3618fe2f/utils.py#L99
+def disable_dropout(model: torch.nn.Module):
+    """Disable dropout in a model."""
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0
 
 
-def forward(model, query_responses, labels, mb_best, tokenizer):
+def forward(model, query_responses, labels, tokenizer):
     attention_mask = query_responses != tokenizer.pad_token_id
     input_ids = torch.masked_fill(query_responses, ~attention_mask, 0)
     output = model(
@@ -184,8 +177,8 @@ def forward(model, query_responses, labels, mb_best, tokenizer):
     loss_mask = (labels != tokenizer.pad_token_id)
     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
     all_logps = (per_token_logps * loss_mask).sum(-1)
-    chosen_logps = all_logps.view(-1, args.label.num_labels).gather(1, mb_best.view(-1, 1)).view(-1)
-    rejected_logps = all_logps.view(-1, args.label.num_labels).gather(1, (1 - mb_best).view(-1, 1)).view(-1)
+    chosen_logps = all_logps[:query_responses.shape[0] // 2]
+    rejected_logps = all_logps[query_responses.shape[0] // 2:]
     return chosen_logps, rejected_logps
 
 
@@ -217,9 +210,9 @@ def first_true_indices(bools, dtype=torch.long):
 
 
 def truncate_response(args, tokenizer, responses):
-    trunc_idxs = first_true_indices(responses == args.task.truncate_token_id).unsqueeze(-1)
-    new_size = [1] * (len(responses.size()) - 1) + [args.task.response_length]
-    idxs = torch.arange(args.task.response_length, device=responses.device).view(*new_size)
+    trunc_idxs = first_true_indices(responses == args.truncate_token_id).unsqueeze(-1)
+    new_size = [1] * (len(responses.size()) - 1) + [args.response_length]
+    idxs = torch.arange(args.response_length, device=responses.device).view(*new_size)
     postprocessed_responses = torch.masked_fill(responses, idxs > trunc_idxs, tokenizer.pad_token_id)
     return postprocessed_responses
 
@@ -229,18 +222,12 @@ def evaluate_rm(args: Args, accelerator, tokenizer, model, ref_model, dataloader
     with torch.no_grad():
         items = defaultdict(list)
         for data in tqdm(dataloader):
-            query_responses = torch.cat(
-                [data["query_response0_token"].unsqueeze(1), data["query_response1_token"].unsqueeze(1)], dim=1
-            ).flatten(0, 1)
-            labels = torch.cat(
-                [data["query_response0_token_response_label"].unsqueeze(1), data["query_response1_token_response_label"].unsqueeze(1)],
-                dim=1,
-            ).flatten(0, 1)
-            mb_best = data["choice"]
-            chosen_logps, rejected_logps = forward(model, query_responses, labels, mb_best, tokenizer)
-            ref_chosen_logps, ref_rejected_logps = forward(ref_model, query_responses, labels, mb_best, tokenizer)
-            reward_preferred = args.beta * (chosen_logps - ref_chosen_logps).detach()
-            reward_rejected = args.beta * (rejected_logps - ref_rejected_logps).detach()
+            query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
+            labels = torch.cat((data["query_chosen_token_response_label"], data["query_rejected_token_response_label"]), dim=0)
+            ref_chosen_logps, ref_rejected_logps = forward(ref_model, query_responses, labels, tokenizer)
+            chosen_logps, rejected_logps = forward(model, query_responses, labels, tokenizer)
+            reward_preferred = args.beta * (chosen_logps - ref_chosen_logps)
+            reward_rejected = args.beta * (rejected_logps - ref_rejected_logps)
             accuracy = reward_preferred > reward_rejected
             print(accuracy.float().mean())
             for k in data:
@@ -316,39 +303,23 @@ def evaluate_policy(args: Args, model, tokenizer, dataloader, generation_config,
 
 # def train(args: Args):
 if __name__ == "__main__":
-    args = tyro.cli(Args)
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
+    args, accelerator = parse_args()
     local_seed = args.seed + accelerator.process_index * 100003  # Prime
-    args.world_size = accelerator.num_processes
-    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
-    args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
-    args.batch_size = int(args.local_batch_size * args.world_size)
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.base_model,
-        padding_side="right",
-        trust_remote_code=True,
-    )
-    # we use the padding token manually but do not resize the token embedding of the model
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if args.task.truncate_token == "eos":
-        args.task.truncate_token_id = tokenizer.eos_token_id
 
     # load dataset
     dataset = load_dataset(args.label_dataset, split="train")
     dataset = dataset.shuffle(seed=local_seed)
-    dataset = dataset.select(range(args.label.num_train))
+    dataset = dataset.select(range(args.total_episodes))
     dataset = dataset.with_format(
         "torch",
         columns=[
             "query_token",
-            "choice",
-            "response0_token",
-            "query_response0_token",
-            "query_response0_token_response_label",
-            "response1_token",
-            "query_response1_token",
-            "query_response1_token_response_label",
+            "chosen_token",
+            "query_chosen_token",
+            "query_chosen_token_response_label",
+            "rejected_token",
+            "query_rejected_token",
+            "query_rejected_token_response_label",
             "batch",
             "split",
         ],
@@ -363,34 +334,36 @@ if __name__ == "__main__":
             columns=[
                 "query_token",
                 "choice",
-                "response0_token",
-                "query_response0_token",
-                "query_response0_token_response_label",
-                "response1_token",
-                "query_response1_token",
-                "query_response1_token_response_label",
+                "chosen_token",
+                "query_chosen_token",
+                "rejected_token",
+                "query_rejected_token",
                 "batch",
                 "split",
                 "extra.confidence",
-                "response0_policy",
-                "response1_policy",
+                "chosen_policy",
+                "rejected_policy",
                 "policies",
             ],
         )
         eval_datasets.append(validation_dataset)
         eval_dataloaders[split] = DataLoader(validation_dataset, batch_size=args.local_eval_batch_size)
-        accelerator.print("The number of samples in validation_dataset", len(validation_dataset))
-    accelerator.print("The number of samples in dataset", len(dataset))
-
-    sft_validation_dataset = load_dataset(args.task.query_dataset, split="validation")
+    sft_validation_dataset = load_dataset(args.query_dataset, split="validation")
     sft_validation_dataset = sft_validation_dataset.with_format("torch", columns=["query_token", "reference_response_token", "query_reference_response_token_response_label"])
     sft_validation_dataloader = DataLoader(sft_validation_dataset, batch_size=args.local_eval_batch_size)
-
-    args.total_episodes = len(dataset)
     args.num_updates = args.total_episodes // args.batch_size
 
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.base_model,
+        padding_side="right",
+        trust_remote_code=True,
+    )
+    # we use the padding token manually but do not resize the token embedding of the model
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if args.truncate_token == "eos":
+        args.truncate_token_id = tokenizer.eos_token_id
+
     console = Console(force_terminal=True)
-    run_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SimpleNamespace()  # dummy writer
     writer.add_scalar = lambda x, y, z: None
     if accelerator.is_main_process:
@@ -402,12 +375,12 @@ if __name__ == "__main__":
                 entity=args.wandb_entity,
                 sync_tensorboard=True,
                 config=asdict(args),
-                name=run_name,
+                name=args.run_name,
                 save_code=True,
             )
-            # file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
-            # wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
-        writer = SummaryWriter(f"runs/{run_name}")
+            file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
+            wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
+        writer = SummaryWriter(f"runs/{args.run_name}")
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -418,18 +391,20 @@ if __name__ == "__main__":
     np.random.seed(local_seed)
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
-    # model_config = AutoConfig.from_pretrained(args.base_model)
-    # configure_dropout(model_config, args.dropout_layer_keys, 0.0)  # disable dropout
+    model_config = AutoConfig.from_pretrained(args.base_model)
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        # config=model_config,
+        config=model_config,
         trust_remote_code=True,
     )
+    ref_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
+        args.base_model,
+        config=model_config,
+        trust_remote_code=True,
+    )
+    disable_dropout(model)
     model.generation_config.eos_token_id = None  # disable `pad_token_id` and `eos_token_id` because we just want to
     model.generation_config.pad_token_id = None  # generate tokens without truncation / padding
-    ref_model = AutoModelForCausalLM.from_pretrained(args.base_model)
-    # if accelerator.is_main_process:
-    #     pprint(model_config)
     if args.optimizer == "adam":
         optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=args.eps)
     elif args.optimizer == "adamw":
@@ -441,18 +416,19 @@ if __name__ == "__main__":
         num_training_steps=args.num_updates * args.num_train_epochs,
     )
 
-    if args.deepspeed:
-        deepspeed_states = AcceleratorState().deepspeed_plugin
-        deepspeed_states.deepspeed_config["train_micro_batch_size_per_gpu"] = args.local_micro_batch_size
-    
-    ref_model = ref_model.to(device)
+    # sync random states for DataLoader(shuffle=True) before `accelerator.prepare`
+    # see https://gist.github.com/vwxyzjn/2581bff1e48e185e0b85b6dfe1def79c
+    torch.manual_seed(args.seed)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     eval_dataloaders = {split: accelerator.prepare(eval_dataloader) for split, eval_dataloader in eval_dataloaders.items()}
     sft_validation_dataloader = accelerator.prepare(sft_validation_dataloader)
+    torch.manual_seed(local_seed)  # reset the local seed again
+
+    ref_model = ref_model.to(device)
     # use the same `0.01` temperature for validation response generation https://github.com/openai/summarize-from-feedback/blob/700967448d10004279f138666442bf1497d0e705/exps/sample.py#L27
     validation_generation_config = GenerationConfig(
-        max_new_tokens=args.task.response_length,
-        min_new_tokens=args.task.response_length,
+        max_new_tokens=args.response_length,
+        min_new_tokens=args.response_length,
         temperature=(0.01 + 1e-7),
         top_k=0.0,
         top_p=1.0,
@@ -474,19 +450,12 @@ if __name__ == "__main__":
         for data in dataloader:
             update += 1
             global_step += args.micro_batch_size
-            query_responses = torch.cat(
-                [data["query_response0_token"].unsqueeze(1), data["query_response1_token"].unsqueeze(1)], dim=1
-            ).flatten(0, 1)
-            labels = torch.cat(
-                [data["query_response0_token_response_label"].unsqueeze(1), data["query_response1_token_response_label"].unsqueeze(1)],
-                dim=1,
-            ).flatten(0, 1)
-            mb_best = data["choice"]
+            query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
+            labels = torch.cat((data["query_chosen_token_response_label"], data["query_rejected_token_response_label"]), dim=0)
             with torch.no_grad():
-                ref_chosen_logps, ref_rejected_logps = forward(ref_model, query_responses, labels, mb_best, tokenizer)
+                ref_chosen_logps, ref_rejected_logps = forward(ref_model, query_responses, labels, tokenizer)
             with accelerator.accumulate(model):
-                chosen_logps, rejected_logps = forward(model, query_responses, labels, mb_best, tokenizer)
-
+                chosen_logps, rejected_logps = forward(model, query_responses, labels, tokenizer)
                 pi_logratios = chosen_logps - rejected_logps
                 ref_logratios = ref_chosen_logps - ref_rejected_logps
                 logits = pi_logratios - ref_logratios  # also known as h_{\pi_\theta}^{y_w,y_l}
@@ -494,13 +463,12 @@ if __name__ == "__main__":
                     loss = (logits - 1/(2 * args.beta)) ** 2  # Eq. 17 of https://arxiv.org/pdf/2310.12036v2.pdf
                 else:
                     loss = -F.logsigmoid(args.beta * logits) * (1 - args.label_smoothing) - F.logsigmoid(-args.beta * logits) * args.label_smoothing
-                reward_preferred = args.beta * (chosen_logps - ref_chosen_logps).detach()
-                reward_rejected = args.beta * (rejected_logps - ref_rejected_logps).detach()
-
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
             with torch.no_grad():
+                reward_preferred = args.beta * (chosen_logps - ref_chosen_logps)
+                reward_rejected = args.beta * (rejected_logps - ref_rejected_logps)
                 losses[gradient_accumulation_idx] = loss
                 accuracies[gradient_accumulation_idx] = (reward_preferred > reward_rejected).float().mean()
                 reward_preferreds[gradient_accumulation_idx] = reward_preferred.mean()
@@ -524,7 +492,7 @@ if __name__ == "__main__":
     if args.run_eval:
         _, evaluate_df = evaluate_policy(args, model, tokenizer, sft_validation_dataloader, validation_generation_config, sampling=False)
         if accelerator.is_main_process:
-            evaluate_df.to_csv(f"runs/{run_name}/table.csv")
+            evaluate_df.to_csv(f"runs/{args.run_name}/table.csv")
             if args.track:
                 wandb.log({"eval/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
         for eval_split in eval_dataloaders:
@@ -541,8 +509,8 @@ if __name__ == "__main__":
             writer.add_scalar(f"eval/rm/{eval_split}/accuracy", evaluate_df["accuracy"].mean(), global_step)
             accelerator.print(f"eval/rm/{eval_split}/accuracy: {evaluate_df['accuracy'].mean()}")
             if accelerator.is_main_process:
-                os.makedirs(f"eval_tables/{run_name}", exist_ok=True)
-                evaluate_df.to_csv(f"eval_tables/{run_name}/eval_{eval_split}_{update}.csv")
+                os.makedirs(f"eval_tables/{args.run_name}", exist_ok=True)
+                evaluate_df.to_csv(f"eval_tables/{args.run_name}/eval_{eval_split}_{update}.csv")
                 if args.track:
                     wandb.log({f"samples/{eval_split}/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
             del evaluate_df
@@ -557,10 +525,9 @@ if __name__ == "__main__":
         repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
 
         if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir, repo_id=repo_id)
+            tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
-                tokenizer.push_to_hub(repo_id, revision=f"seed{args.seed}_{str(time_int)}")
-
+                tokenizer.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision)
         unwrapped: PreTrainedModel = accelerator.unwrap_model(model)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
@@ -570,11 +537,7 @@ if __name__ == "__main__":
                 save_function=accelerator.save,
                 state_dict=accelerator.get_state_dict(model),
                 safe_serialization=False,
-                repo_id=repo_id,
             )
             if args.push_to_hub:
-                unwrapped.push_to_hub(repo_id, revision=f"seed{args.seed}_{str(time_int)}", safe_serialization=False)
-
-# if __name__ == "__main__":
-#     args = tyro.cli(Args)
-#     train(args)
+                unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
+                accelerator.print(f"🔥 pushed to {args.hf_repo_url}")

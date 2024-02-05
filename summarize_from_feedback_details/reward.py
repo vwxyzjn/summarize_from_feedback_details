@@ -14,7 +14,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from accelerate import Accelerator
-from accelerate.state import AcceleratorState
 from accelerate.utils import gather_object, broadcast
 from datasets import load_dataset
 from rich.console import Console
@@ -80,7 +79,7 @@ class Args:
     """The number of gradient accumulation steps"""
     local_micro_batch_size: Optional[int] = 1
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
-    total_episodes: Optional[int] = None
+    total_episodes: Optional[int] = 92832
     """The total number of episodes in the dataset"""
     micro_batch_size: Optional[int] = None
     """The micro batch size across devices (HF's `per_device_train_batch_size` * `world_size`)"""
@@ -100,8 +99,6 @@ class Args:
     """the path to the reward model"""
     sft_model_path: str = "EleutherAI/pythia-160m"
     """the path to the sft model"""
-    num_train: int = 92832
-    """the total episodes """
     label_dataset: str = "vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144"
     """the name of the dataset to use for labels in `https://huggingface.co/datasets/vwxyzjn/lm-human-preferences`"""
 
@@ -262,7 +259,7 @@ if __name__ == "__main__":
     # load dataset
     dataset = load_dataset(args.label_dataset, split="train")
     dataset = dataset.shuffle(seed=local_seed)
-    dataset = dataset.select(range(args.num_train))
+    dataset = dataset.select(range(args.total_episodes))
     dataset = dataset.with_format(
         "torch",
         columns=[

@@ -345,8 +345,6 @@ if __name__ == "__main__":
     disable_dropout(model)
     model.generation_config.eos_token_id = None  # disable `pad_token_id` and `eos_token_id` because we just want to
     model.generation_config.pad_token_id = None  # generate tokens without truncation / padding
-    if accelerator.is_main_process:
-        pprint(model_config)
     if args.optimizer == "adam":
         optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=args.eps)
     elif args.optimizer == "adamw":
