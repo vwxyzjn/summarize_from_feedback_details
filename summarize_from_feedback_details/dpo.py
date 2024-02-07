@@ -95,6 +95,8 @@ class Args:
     """the name of the pretrained model to use"""
     query_dataset: str = "vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144"
     """the query dataset"""
+    sft_model_path: str = "EleutherAI/pythia-160m"
+    """the path to the sft model"""
     response_length: int = 53
     """the length of the response"""
     truncate_token: Literal["eos"] = "eos"
@@ -229,20 +231,19 @@ def evaluate_rm(args: Args, accelerator, tokenizer, model, ref_model, dataloader
             reward_preferred = args.beta * (chosen_logps - ref_chosen_logps)
             reward_rejected = args.beta * (rejected_logps - ref_rejected_logps)
             accuracy = reward_preferred > reward_rejected
-            print(accuracy.float().mean())
             for k in data:
                 data[k] = gather_object(data[k])
             for i in range(len(accuracy)):
                 items["query"].append(tokenizer.decode(data["query_token"][i], skip_special_tokens=True))
-                items["response0"].append(tokenizer.decode(data["response0_token"][i]))
-                items["response1"].append(tokenizer.decode(data["response1_token"][i]))
+                items["chosen"].append(tokenizer.decode(data["chosen_token"][i]))
+                items["rejected"].append(tokenizer.decode(data["rejected_token"][i]))
                 items["batch"].append(data["batch"][i])
                 items["split"].append(data["split"][i])
                 items["confidence"].append(data["extra.confidence"][i].item())
                 items["choice"].append(data["choice"][i].item())
                 items["policies"].append(data["policies"][i])
-                items["response0_policy"].append(data["response0_policy"][i])
-                items["response1_policy"].append(data["response1_policy"][i])
+                items["chosen_policy"].append(data["chosen_policy"][i])
+                items["rejected_policy"].append(data["rejected_policy"][i])
                 items["accuracy"].append(accuracy[i].item())
     model.train()
     return pd.DataFrame(items)
@@ -336,8 +337,10 @@ if __name__ == "__main__":
                 "choice",
                 "chosen_token",
                 "query_chosen_token",
+                "query_chosen_token_response_label",
                 "rejected_token",
                 "query_rejected_token",
+                "query_rejected_token_response_label",
                 "batch",
                 "split",
                 "extra.confidence",
@@ -391,14 +394,14 @@ if __name__ == "__main__":
     np.random.seed(local_seed)
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
-    model_config = AutoConfig.from_pretrained(args.base_model)
+    model_config = AutoConfig.from_pretrained(args.sft_model_path)
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
+        args.sft_model_path,
         config=model_config,
         trust_remote_code=True,
     )
     ref_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
+        args.sft_model_path,
         config=model_config,
         trust_remote_code=True,
     )

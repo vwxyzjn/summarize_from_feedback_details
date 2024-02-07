@@ -210,17 +210,6 @@ def disable_dropout(model: torch.nn.Module):
         if isinstance(module, torch.nn.Dropout):
             module.p = 0
 
-
-def print_rich_table(title: str, df: pd.DataFrame, console: Console) -> Table:
-    table = Table(show_lines=True)
-    for column in df.columns:
-        table.add_column(column)
-    for _, row in df.iterrows():
-        table.add_row(*row.astype(str).tolist())
-    console.rule(f"[bold red]{title}")
-    console.print(table)
-
-
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.normal_(layer.weight, std=std)
     torch.nn.init.constant_(layer.bias, val=bias_const)
@@ -508,10 +497,6 @@ if __name__ == "__main__":
             args.reward_model_path,
             trust_remote_code=True,
         )
-    if accelerator.is_main_process:
-        pprint(model_config)
-        pprint(reward_model.config)
-    # each class should have a separate pretrained model that do not share weights
     ref_policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
     policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
     for module in [policy, ref_policy, critic, reward_model]:
@@ -569,8 +554,6 @@ if __name__ == "__main__":
         reward_model = reward_model.to(device)
 
     kl_ctl = AdaptiveKLController(args.reward.kl_coef, hparams=args.reward.adaptive_kl)
-    # WARNING: even with `max_new_tokens` and `min_new_tokens` set to the same value, the number of tokens generated
-    # may not be the same. TODO: investigate further, we just want to generate a fixed number of tokens
     generation_config = GenerationConfig(
         max_new_tokens=args.response_length,
         min_new_tokens=args.response_length,
@@ -623,11 +606,6 @@ if __name__ == "__main__":
                     eval_df.to_csv(f"runs/{args.run_name}/{eval_split}_table_{global_step}.csv")
                     if args.track:
                         wandb.log({f"samples/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
-                    else:
-                        try:
-                            print_rich_table(f"Sample Output at Step {update}", eval_df[:1], console)
-                        except Exception as e:
-                            print(e)
             del eval_storage, eval_df
             torch.cuda.empty_cache()
 
