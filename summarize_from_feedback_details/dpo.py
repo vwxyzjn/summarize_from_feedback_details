@@ -213,8 +213,8 @@ def first_true_indices(bools, dtype=torch.long):
 
 def truncate_response(args, tokenizer, responses):
     trunc_idxs = first_true_indices(responses == args.truncate_token_id).unsqueeze(-1)
-    new_size = [1] * (len(responses.size()) - 1) + [args.response_length]
-    idxs = torch.arange(args.response_length, device=responses.device).view(*new_size)
+    new_size = [1] * (len(responses.size()) - 1) + [responses.shape[1]]
+    idxs = torch.arange(responses.shape[1], device=responses.device).view(*new_size)
     postprocessed_responses = torch.masked_fill(responses, idxs > trunc_idxs, tokenizer.pad_token_id)
     return postprocessed_responses
 
@@ -430,8 +430,8 @@ if __name__ == "__main__":
     ref_model = ref_model.to(device)
     # use the same `0.01` temperature for validation response generation https://github.com/openai/summarize-from-feedback/blob/700967448d10004279f138666442bf1497d0e705/exps/sample.py#L27
     validation_generation_config = GenerationConfig(
-        max_new_tokens=args.response_length,
-        min_new_tokens=args.response_length,
+        max_new_tokens=128,
+        min_new_tokens=128,
         temperature=(0.01 + 1e-7),
         top_k=0.0,
         top_p=1.0,
@@ -498,6 +498,8 @@ if __name__ == "__main__":
             evaluate_df.to_csv(f"runs/{args.run_name}/table.csv")
             if args.track:
                 wandb.log({"eval/query_responses": wandb.Table(dataframe=evaluate_df)}, step=update)
+        del evaluate_df
+        torch.cuda.empty_cache()
         for eval_split in eval_dataloaders:
             evaluate_df = evaluate_rm(args, accelerator, tokenizer, model, ref_model, eval_dataloaders[eval_split])
             for split, row in evaluate_df[["split", "accuracy"]].groupby(["split"]).mean().iterrows():

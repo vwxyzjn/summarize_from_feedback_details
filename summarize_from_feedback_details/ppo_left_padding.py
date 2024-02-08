@@ -345,8 +345,8 @@ def first_true_indices(bools, dtype=torch.long):
 
 def truncate_response(args, tokenizer, responses):
     trunc_idxs = first_true_indices(responses == args.truncate_token_id).unsqueeze(-1)
-    new_size = [1] * (len(responses.size()) - 1) + [args.response_length]
-    idxs = torch.arange(args.response_length, device=responses.device).view(*new_size)
+    new_size = [1] * (len(responses.size()) - 1) + [responses.shape[1]]
+    idxs = torch.arange(responses.shape[1], device=responses.device).view(*new_size)
     postprocessed_responses = torch.masked_fill(responses, idxs > trunc_idxs, tokenizer.pad_token_id)
     return postprocessed_responses
 
