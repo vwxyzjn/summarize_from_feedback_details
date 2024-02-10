@@ -1,0 +1,70 @@
+Args(
+│   exp_name='dpo',
+│   seed=1,
+│   track=False,
+│   wandb_project_name='tldr_summarize',
+│   wandb_entity=None,
+│   cuda=True,
+│   run_name=None,
+│   load_from_cache_file=False,
+│   push_to_hub=False,
+│   hf_entity='',
+│   deepspeed=False,
+│   print_sample_output_freq=220,
+│   run_eval=False,
+│   eps=1e-05,
+│   lr=3e-06,
+│   optimizer='adamw',
+│   scheduler='cosine',
+│   warm_up_steps=0,
+│   world_size=1,
+│   num_train_epochs=1,
+│   num_updates=11604,
+│   gradient_accumulation_steps=8,
+│   local_micro_batch_size=1,
+│   total_episodes=92832,
+│   micro_batch_size=1,
+│   local_batch_size=8,
+│   batch_size=8,
+│   local_eval_batch_size=1,
+│   base_model='EleutherAI/pythia-160m',
+│   dropout_layer_keys=['attn_pdrop', 'embd_pdrop', 'resid_pdrop', 'summary_first_dropout'],
+│   output_dir='models/dpo_policy_model',
+│   label_dataset='cleanrl/summarize_from_feedback_oai_preprocessing_1705009345',
+│   ipo=False,
+│   label_smoothing=0.0,
+│   beta=0.05,
+│   task=TaskHParams(
+│   │   query_length=512,
+│   │   query_dataset='cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1705009345',
+│   │   query_format_str='SUBREDDIT: r/{subreddit}\n\nTITLE: {title}\n\nPOST: {post}\n\nTL;DR:',
+│   │   query_truncate_field='post',
+│   │   query_truncate_text='\n',
+│   │   query_padding=None,
+│   │   query_pad_side='left',
+│   │   response_length=53,
+│   │   truncate_token='eos',
+│   │   truncate_token_id=0,
+│   │   truncate_after=16,
+│   │   penalty_reward_value=-1,
+│   │   temperature=0.01
+│   ),
+│   label=LabelHParams(type=None, num_train=92832, num_labels=2, source=None)
+)
+===training model===
+epoch: 0
+train_accuracy=0.0, scheduler.get_last_lr()=[2.9999999450274902e-06], optimizer.param_groups[0]['lr']=2.9999999450274902e-06, update=9
+train_accuracy=0.375, scheduler.get_last_lr()=[2.9999997801099645e-06], optimizer.param_groups[0]['lr']=2.9999997801099645e-06, update=17
+train_accuracy=0.75, scheduler.get_last_lr()=[2.9999995052474356e-06], optimizer.param_groups[0]['lr']=2.9999995052474356e-06, update=25
+train_accuracy=0.75, scheduler.get_last_lr()=[2.9999991204399225e-06], optimizer.param_groups[0]['lr']=2.9999991204399225e-06, update=33
+train_accuracy=0.25, scheduler.get_last_lr()=[2.999998625687455e-06], optimizer.param_groups[0]['lr']=2.999998625687455e-06, update=41
+train_accuracy=0.5, scheduler.get_last_lr()=[2.999998020990068e-06], optimizer.param_groups[0]['lr']=2.999998020990068e-06, update=49
+train_accuracy=0.5, scheduler.get_last_lr()=[2.999997306347807e-06], optimizer.param_groups[0]['lr']=2.999997306347807e-06, update=57
+train_accuracy=0.5, scheduler.get_last_lr()=[2.9999964817607227e-06], optimizer.param_groups[0]['lr']=2.9999964817607227e-06, update=65
+train_accuracy=0.625, scheduler.get_last_lr()=[2.999995547228877e-06], optimizer.param_groups[0]['lr']=2.999995547228877e-06, update=73
+train_accuracy=0.875, scheduler.get_last_lr()=[2.999994502752338e-06], optimizer.param_groups[0]['lr']=2.999994502752338e-06, update=81
+train_accuracy=0.375, scheduler.get_last_lr()=[2.9999933483311823e-06], optimizer.param_groups[0]['lr']=2.9999933483311823e-06, update=89
+train_accuracy=0.5, scheduler.get_last_lr()=[2.999992083965494e-06], optimizer.param_groups[0]['lr']=2.999992083965494e-06, update=97
+train_accuracy=0.625, scheduler.get_last_lr()=[2.9999907096553665e-06], optimizer.param_groups[0]['lr']=2.9999907096553665e-06, update=105
+train_accuracy=0.25, scheduler.get_last_lr()=[2.9999892254009005e-06], optimizer.param_groups[0]['lr']=2.9999892254009005e-06, update=113
+train_accuracy=0.375, scheduler.get_last_lr()=[2.999987631202204e-06], optimizer.param_groups[0]['lr']=2.999987631202204e-06, update=121

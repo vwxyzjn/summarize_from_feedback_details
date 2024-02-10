@@ -1,0 +1,84 @@
+Args(
+│   exp_name='ppo_left_padding',
+│   seed=1,
+│   track=False,
+│   wandb_project_name='tldr_summarize',
+│   wandb_entity=None,
+│   cuda=True,
+│   run_name=None,
+│   load_from_cache_file=False,
+│   push_to_hub=False,
+│   hf_entity='',
+│   deepspeed=False,
+│   print_sample_output_freq=220,
+│   run_eval=False,
+│   eps=1e-05,
+│   lr=1e-05,
+│   optimizer='adamw',
+│   scheduler='cosine',
+│   warm_up_steps=0,
+│   world_size=8,
+│   num_train_epochs=1,
+│   num_updates=None,
+│   gradient_accumulation_steps=64,
+│   local_micro_batch_size=1,
+│   total_episodes=1000000,
+│   micro_batch_size=8,
+│   local_batch_size=64,
+│   batch_size=512,
+│   nminibatches=1,
+│   local_mini_batch_size=64,
+│   mini_batch_size=512,
+│   local_eval_batch_size=2,
+│   local_rollout_forward_batch_size=64,
+│   base_model='EleutherAI/pythia-160m',
+│   offload=False,
+│   reward_model_path='',
+│   sft_model_path='EleutherAI/pythia-160m',
+│   dropout_layer_keys=[
+│   │   'attn_pdrop',
+│   │   'embd_pdrop',
+│   │   'resid_pdrop',
+│   │   'summary_first_dropout'
+│   ],
+│   output_dir='models/ppo_model',
+│   task=TaskHParams(
+│   │   query_length=512,
+│   │   query_dataset='vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_pythia-160m_53',
+│   │   query_format_str='SUBREDDIT: r/{subreddit}\n\nTITLE: {title}\n\nPOST: {post}\n\nTL;DR:',
+│   │   query_truncate_field='post',
+│   │   query_truncate_text='\n',
+│   │   query_padding=None,
+│   │   query_pad_side='left',
+│   │   response_length=53,
+│   │   truncate_token='eos',
+│   │   truncate_token_id=0,
+│   │   truncate_after=16,
+│   │   penalty_reward_value=-1,
+│   │   temperature=0.7
+│   ),
+│   reward=RewardHParams(
+│   │   use_adaptive_kl=False,
+│   │   adaptive_kl=AdaptiveKLParams(target=6.0, horizon=10000),
+│   │   dataset_std=1.0,
+│   │   kl_coef=0.05
+│   ),
+│   ppo=PpoHParams(
+│   │   num_updates=1953,
+│   │   nminibatches=1,
+│   │   noptepochs=4,
+│   │   vf_coef=0.1,
+│   │   cliprange=0.2,
+│   │   cliprange_value=0.2,
+│   │   gamma=1,
+│   │   lam=0.95,
+│   │   whiten_rewards=True
+│   )
+)
+ppo_epoch_idx 0 approxkl 0.0 pg_loss -1.0244548320770264e-08 pg_clipfrac 0.0 ratio 1.0
+ppo_epoch_idx 1 approxkl 0.002892738673835993 pg_loss -0.010574975982308388 pg_clipfrac 0.025206368416547775 ratio 1.0000581741333008
+ppo_epoch_idx 2 approxkl 0.00561944767832756 pg_loss -0.018445447087287903 pg_clipfrac 0.050511009991168976 ratio 1.0010929107666016
+ppo_epoch_idx 3 approxkl 0.008116843178868294 pg_loss -0.024340271949768066 pg_clipfrac 0.07289209961891174 ratio 1.0021793842315674
+ppo_epoch_idx 0 approxkl 0.0 pg_loss 3.725290298461914e-09 pg_clipfrac 0.0 ratio 1.0
+ppo_epoch_idx 1 approxkl 0.0005444658454507589 pg_loss -0.004400897771120071 pg_clipfrac 0.002505896147340536 ratio 0.9994328022003174
+ppo_epoch_idx 2 approxkl 0.001715664635412395 pg_loss -0.007994911633431911 pg_clipfrac 0.011792453937232494 ratio 0.9986987113952637

@@ -1,0 +1,60 @@
+Args(
+│   exp_name='sft',
+│   seed=1,
+│   track=False,
+│   wandb_project_name='tldr_summarize',
+│   wandb_entity=None,
+│   cuda=True,
+│   run_name=None,
+│   load_from_cache_file=False,
+│   push_to_hub=False,
+│   hf_entity='',
+│   deepspeed=False,
+│   print_sample_output_freq=220,
+│   run_eval=False,
+│   eps=1e-05,
+│   lr=6.35e-05,
+│   optimizer='adamw',
+│   scheduler='cosine',
+│   warm_up_steps=0,
+│   world_size=8,
+│   num_train_epochs=1,
+│   num_updates=911,
+│   gradient_accumulation_steps=16,
+│   local_micro_batch_size=1,
+│   total_episodes=116722,
+│   micro_batch_size=8,
+│   local_batch_size=16,
+│   batch_size=128,
+│   local_eval_batch_size=4,
+│   base_model='EleutherAI/pythia-160m',
+│   query_dataset='vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144',
+│   response_length=53,
+│   truncate_token='eos',
+│   truncate_token_id=0,
+│   temperature=0.01,
+│   output_dir='models/sft_model'
+)
+epoch: 0
+loss.item()=3.6445741653442383, scheduler.get_last_lr()=[2.9999910808426766e-06], optimizer.param_groups[0]['lr']=2.9999910808426766e-06, update=17
+loss.item()=2.990408182144165, scheduler.get_last_lr()=[2.9999643234767745e-06], optimizer.param_groups[0]['lr']=2.9999643234767745e-06, update=33
+loss.item()=3.2806267738342285, scheduler.get_last_lr()=[2.999919728220498e-06], optimizer.param_groups[0]['lr']=2.999919728220498e-06, update=49
+loss.item()=3.282127618789673, scheduler.get_last_lr()=[2.999857295604183e-06], optimizer.param_groups[0]['lr']=2.999857295604183e-06, update=65
+loss.item()=3.0893521308898926, scheduler.get_last_lr()=[2.9997770263702923e-06], optimizer.param_groups[0]['lr']=2.9997770263702923e-06, update=81
+loss.item()=2.670344829559326, scheduler.get_last_lr()=[2.9996789214734033e-06], optimizer.param_groups[0]['lr']=2.9996789214734033e-06, update=97
+loss.item()=2.7441556453704834, scheduler.get_last_lr()=[2.9995629820802003e-06], optimizer.param_groups[0]['lr']=2.9995629820802003e-06, update=113
+loss.item()=3.8332009315490723, scheduler.get_last_lr()=[2.9994292095694594e-06], optimizer.param_groups[0]['lr']=2.9994292095694594e-06, update=129
+loss.item()=2.94746732711792, scheduler.get_last_lr()=[2.999277605532031e-06], optimizer.param_groups[0]['lr']=2.999277605532031e-06, update=145
+loss.item()=2.9301559925079346, scheduler.get_last_lr()=[2.9991081717708215e-06], optimizer.param_groups[0]['lr']=2.9991081717708215e-06, update=161
+loss.item()=2.611522674560547, scheduler.get_last_lr()=[2.9989209103007734e-06], optimizer.param_groups[0]['lr']=2.9989209103007734e-06, update=177
+loss.item()=3.1381471157073975, scheduler.get_last_lr()=[2.9987158233488396e-06], optimizer.param_groups[0]['lr']=2.9987158233488396e-06, update=193
+loss.item()=2.946718692779541, scheduler.get_last_lr()=[2.998492913353957e-06], optimizer.param_groups[0]['lr']=2.998492913353957e-06, update=209
+loss.item()=2.5905344486236572, scheduler.get_last_lr()=[2.9982521829670174e-06], optimizer.param_groups[0]['lr']=2.9982521829670174e-06, update=225
+loss.item()=3.180582046508789, scheduler.get_last_lr()=[2.997993635050838e-06], optimizer.param_groups[0]['lr']=2.997993635050838e-06, update=241
+loss.item()=2.3489038944244385, scheduler.get_last_lr()=[2.997717272680124e-06], optimizer.param_groups[0]['lr']=2.997717272680124e-06, update=257
+loss.item()=3.2588894367218018, scheduler.get_last_lr()=[2.9974230991414354e-06], optimizer.param_groups[0]['lr']=2.9974230991414354e-06, update=273
+loss.item()=3.202486753463745, scheduler.get_last_lr()=[2.9971111179331453e-06], optimizer.param_groups[0]['lr']=2.9971111179331453e-06, update=289
+loss.item()=2.8247315883636475, scheduler.get_last_lr()=[2.996781332765399e-06], optimizer.param_groups[0]['lr']=2.996781332765399e-06, update=305
+loss.item()=2.8810038566589355, scheduler.get_last_lr()=[2.996433747560072e-06], optimizer.param_groups[0]['lr']=2.996433747560072e-06, update=321
+loss.item()=2.99922776222229, scheduler.get_last_lr()=[2.9960683664507204e-06], optimizer.param_groups[0]['lr']=2.9960683664507204e-06, update=337
+loss.item()=3.4551572799682617, scheduler.get_last_lr()=[2.995685
