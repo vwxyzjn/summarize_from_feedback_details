@@ -177,7 +177,7 @@ def parse_args() -> tuple[Args, Accelerator]:
     args = tyro.cli(Args)
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
     args.world_size = accelerator.num_processes
-    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps
+    args.local_batch_size = args.local_micro_batch_size * args.gradient_accumulation_steps * args.nminibatches
     args.micro_batch_size = int(args.local_micro_batch_size * args.world_size)
     args.batch_size = int(args.local_batch_size * args.world_size)
     args.mini_batch_size = exact_div(args.batch_size, args.nminibatches)
@@ -435,7 +435,6 @@ if __name__ == "__main__":
     dataset = load_dataset(args.query_dataset, split="train")
     dataset = dataset.with_format("torch", columns=["query_token", "reference_response_token"])
     dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
-    validation_dataset = load_dataset(args.query_dataset, split="validation")
     eval_dataloaders = {}
     for split in ["validation", "test"]:
         eval_dataset = load_dataset(args.query_dataset, split=split)
@@ -503,10 +502,6 @@ if __name__ == "__main__":
     policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
     for module in [policy, ref_policy, critic, reward_model]:
         disable_dropout(module)
-    # critic.lm_backbone.gradient_checkpointing_enable()
-    # policy.gradient_checkpointing_enable()
-    accelerator.print(policy)
-    accelerator.print(critic)
     policy.generation_config.eos_token_id = None  # disable `pad_token_id` and `eos_token_id` because we just want to
     policy.generation_config.pad_token_id = None  # generate tokens without truncation / padding
     model = PolicyAndValueWrapper(policy, critic)
@@ -577,7 +572,7 @@ if __name__ == "__main__":
     accelerator.print("===training policy===")
     global_step = 0
     start_time = time.time()
-    eval_split = "validation"
+    eval_split = list(eval_dataloaders.keys())[0]
     stats_shape = (args.ppo.noptepochs, args.nminibatches, args.gradient_accumulation_steps)
     approxkl_stats = torch.zeros(stats_shape, device=device)
     pg_clipfrac_stats = torch.zeros(stats_shape, device=device)
@@ -713,10 +708,6 @@ if __name__ == "__main__":
             advantages = whiten(advantages)
             return_mean, return_var = returns.mean(), returns.var()
             value_mean, value_var = values.mean(), values.var()
-            writer.add_histogram("rewards", rewards[0].float(), global_step)
-            writer.add_histogram("advantages", advantages[0].float(), global_step)
-            accelerator.print("rewards====", rewards[0])
-            accelerator.print("advantages====", advantages[0])
             torch.cuda.empty_cache()
 
         # Do multiple epochs of PPO training, with a fresh random shuffle in each epoch
@@ -776,22 +767,51 @@ if __name__ == "__main__":
                             ratio_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = ratio.mean()
                     gradient_accumulation_idx += 1
                 minibatch_idx += 1
-                if accelerator.is_main_process:
-                    console.print(
-                        f"ppo_epoch_idx",
-                        ppo_epoch_idx,
-                        "approxkl",
-                        approxkl_stats[: ppo_epoch_idx + 1].mean().item(),
-                        "pg_loss",
-                        pg_loss_stats[: ppo_epoch_idx + 1].mean().item(),
-                        "pg_clipfrac",
-                        pg_clipfrac_stats[: ppo_epoch_idx + 1].mean().item(),
-                        "ratio",
-                        ratio_stats[: ppo_epoch_idx + 1].mean().item(),
-                    )
+                # del everything and empty cache
+                del (
+                    output,
+                    vpred_temp,
+                    logits,
+                    new_all_logprobs,
+                    new_logprobs,
+                    vpred,
+                    vpredclipped,
+                    vf_losses1,
+                    vf_losses2,
+                    vf_loss,
+                    vf_clipfrac,
+                    logprobs_diff,
+                    ratio,
+                    pg_losses,
+                    pg_losses2,
+                    pg_loss,
+                    loss,
+                    pg_clipfrac,
+                    prob_dist,
+                    entropy,
+                    approxkl,
+                    mb_return,
+                    mb_advantage,
+                    mb_values,
+                    mb_responses,
+                    mb_query_responses,
+                    mb_logprobs,
+                )
+                torch.cuda.empty_cache()
+            if accelerator.is_main_process:
+                console.print(
+                    f"ppo_epoch_idx",
+                    ppo_epoch_idx,
+                    "approxkl",
+                    approxkl_stats[: ppo_epoch_idx + 1].mean().item(),
+                    "pg_loss",
+                    pg_loss_stats[: ppo_epoch_idx + 1].mean().item(),
+                    "pg_clipfrac",
+                    pg_clipfrac_stats[: ppo_epoch_idx + 1].mean().item(),
+                    "ratio",
+                    ratio_stats[: ppo_epoch_idx + 1].mean().item(),
+                )
         with torch.no_grad():
-            if not args.deepspeed:  # for some reason there is a OOM with the `writer.add_histogram`
-                writer.add_histogram("ppo/val/ratio_hist", ratio, update)
             mean_kl = kl.sum(1).mean()
             mean_entropy = (-logprobs).sum(1).mean()
             mean_non_score_reward = non_score_reward.sum(1).mean()
@@ -804,29 +824,29 @@ if __name__ == "__main__":
             )
             writer.add_scalar("objective/scores", accelerator.gather(scores.mean()).mean().item(), update)
             writer.add_scalar("objective/validation_score", accelerator.gather(validation_score.mean()).mean().item(), update)
-            writer.add_scalar("ppo/loss/policy", accelerator.gather(pg_loss).mean().item(), update)
-            writer.add_scalar("ppo/loss/value", accelerator.gather(vf_loss).mean().item(), update)
-            writer.add_scalar("ppo/loss/total", accelerator.gather(loss).mean().item(), update)
-            writer.add_scalar("ppo/policy/entropy", accelerator.gather(entropy.mean()).mean().item(), update)
-            writer.add_scalar("ppo/policy/approxkl", accelerator.gather(approxkl).mean().item(), update)
-            writer.add_scalar("ppo/policy/clipfrac", accelerator.gather(pg_clipfrac).mean().item(), update)
+            # writer.add_scalar("ppo/loss/policy", accelerator.gather(pg_loss).mean().item(), update)
+            # writer.add_scalar("ppo/loss/value", accelerator.gather(vf_loss).mean().item(), update)
+            # writer.add_scalar("ppo/loss/total", accelerator.gather(loss).mean().item(), update)
+            # writer.add_scalar("ppo/policy/entropy", accelerator.gather(entropy.mean()).mean().item(), update)
+            # writer.add_scalar("ppo/policy/approxkl", accelerator.gather(approxkl).mean().item(), update)
+            # writer.add_scalar("ppo/policy/clipfrac", accelerator.gather(pg_clipfrac).mean().item(), update)
+            # writer.add_scalar("ppo/returns/mean", accelerator.gather(return_mean).mean().item(), update)
+            # writer.add_scalar("ppo/returns/var", accelerator.gather(return_var).mean().item(), update)
+            # writer.add_scalar("ppo/val/vpred", accelerator.gather(vpred.mean()).mean().item(), update)
+            # writer.add_scalar("ppo/val/error", accelerator.gather(vf_losses1.mean()).mean().item(), update)
+            # writer.add_scalar("ppo/val/clipfrac", accelerator.gather(vf_clipfrac).mean().item(), update)
+            # writer.add_scalar("ppo/val/mean", accelerator.gather(value_mean).mean().item(), update)
+            # writer.add_scalar("ppo/val/var", accelerator.gather(value_var).mean().item(), update)
+            # writer.add_scalar("ppo/val/advantage", accelerator.gather(advantages.mean()).mean().item(), update)
+            # writer.add_scalar("ppo/val/advantage_var", accelerator.gather(advantages.mean()).var().item(), update)
             writer.add_scalar("ppo/policy/approxkl_avg", accelerator.gather(approxkl_stats).mean().item(), update)
             writer.add_scalar("ppo/policy/clipfrac_avg", accelerator.gather(pg_clipfrac_stats).mean().item(), update)
             writer.add_scalar("ppo/loss/policy_avg", accelerator.gather(pg_loss_stats).mean().item(), update)
             writer.add_scalar("ppo/loss/value_avg", accelerator.gather(vf_loss_stats).mean().item(), update)
             writer.add_scalar("ppo/val/clipfrac_avg", accelerator.gather(vf_clipfrac_stats).mean().item(), update)
             writer.add_scalar("ppo/policy/entropy_avg", accelerator.gather(entropy_stats).mean().item(), update)
-            writer.add_scalar("ppo/returns/mean", accelerator.gather(return_mean).mean().item(), update)
-            writer.add_scalar("ppo/returns/var", accelerator.gather(return_var).mean().item(), update)
-            writer.add_scalar("ppo/val/vpred", accelerator.gather(vpred.mean()).mean().item(), update)
-            writer.add_scalar("ppo/val/error", accelerator.gather(vf_losses1.mean()).mean().item(), update)
-            writer.add_scalar("ppo/val/clipfrac", accelerator.gather(vf_clipfrac).mean().item(), update)
-            writer.add_scalar("ppo/val/mean", accelerator.gather(value_mean).mean().item(), update)
-            writer.add_scalar("ppo/val/var", accelerator.gather(value_var).mean().item(), update)
             writer.add_scalar("ppo/val/ratio", accelerator.gather(ratio_stats).mean().item(), update)
             writer.add_scalar("ppo/val/ratio_var", accelerator.gather(ratio_stats).var().item(), update)
-            writer.add_scalar("ppo/val/advantage", accelerator.gather(advantages.mean()).mean().item(), update)
-            writer.add_scalar("ppo/val/advantage_var", accelerator.gather(advantages.mean()).var().item(), update)
             writer.add_scalar("ppo/val/num_eos_tokens", (responses == tokenizer.eos_token_id).sum().item(), update)
             writer.add_scalar("ppo/lr", lrnow, update)
             writer.add_scalar("ppo/episode", global_step, update)
@@ -835,8 +855,8 @@ if __name__ == "__main__":
             accelerator.print("ppo/eps", eps, update)
             if args.reward.use_adaptive_kl:
                 kl_ctl.update(mean_kl.item(), args.batch_size)
-            del kl, mean_kl, mean_entropy, mean_non_score_reward, scores
-            torch.cuda.empty_cache()
+        del kl, mean_kl, mean_entropy, mean_non_score_reward, scores
+        torch.cuda.empty_cache()
 
     if args.run_eval:
         for eval_split in eval_dataloaders:
