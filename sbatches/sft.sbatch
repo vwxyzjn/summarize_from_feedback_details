@@ -9,7 +9,7 @@
 #SBATCH --exclusive
 
 module load cuda/12.2
-export WANDB_TAGS=refactor-chosen-rejected2,no-tag-$(git rev-parse --short HEAD)
+export WANDB_TAGS=refactor-chosen-rejected3,no-tag-$(git rev-parse --short HEAD)
 MODELS=("EleutherAI/pythia-6.9b-deduped" "EleutherAI/pythia-2.8b-deduped" "EleutherAI/pythia-1b-deduped")
 SEEDS=(44413 55513 66613 77713)
 MODEL_INDEX=$((SLURM_ARRAY_TASK_ID / 4))
