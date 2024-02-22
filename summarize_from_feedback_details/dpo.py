@@ -487,6 +487,7 @@ if __name__ == "__main__":
                     "train/rm/reward_preferred", accelerator.gather(reward_preferreds).mean().item(), global_step
                 )
                 writer.add_scalar("train/rm/reward_rejected", accelerator.gather(reward_rejecteds).mean().item(), global_step)
+                writer.add_scalar("train/rm/reward_margin", accelerator.gather(reward_margins).mean().item(), global_step)
                 writer.add_scalar("train/rm/lr", scheduler.get_last_lr()[0], global_step)
                 accelerator.print(
                     f"{train_accuracy=}, {scheduler.get_last_lr()=}, {optimizer.param_groups[0]['lr']=}, {update=}"
