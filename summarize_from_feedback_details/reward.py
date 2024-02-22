@@ -208,19 +208,32 @@ class ScalarModel(PreTrainedModel):
         return reward
 
 
-def get_reward(model, query_responses, tokenizer):
+def first_true_indices(bools, dtype=torch.long):
+    """
+    Takes an N-dimensional bool tensor and returns an (N-1)-dimensional tensor of integers giving
+    the position of the first True in each "row".
+
+    Returns the length of the rows (bools.size(-1)) if no element is True in a given row.
+    """
+    row_len = bools.size(-1)
+    zero_or_index = row_len * (~bools).type(dtype) + torch.arange(row_len, dtype=dtype, device=bools.device)
+    return torch.min(zero_or_index, dim=-1).values
+
+
+def get_reward(model, query_responses, tokenizer, context_length=0):
     attention_mask = query_responses != tokenizer.pad_token_id
+    # position_ids = attention_mask.cumsum(1) - attention_mask.long()  # exclusive cumsum
     input_ids = torch.masked_fill(query_responses, ~attention_mask, 0)
     reward_logits = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
+        # position_ids=position_ids,
         return_dict=True,
         output_hidden_states=True,
     )
-    sequence_lengths = (torch.eq(query_responses, tokenizer.pad_token_id).long().argmax(-1) - 1).to(query_responses.device)
+    sequence_lengths = first_true_indices(query_responses[:, context_length:] == tokenizer.pad_token_id) - 1 + context_length
     # https://github.com/huggingface/transformers/blob/dc68a39c8111217683bf49a4912d0c9018bab33d/src/transformers/models/gpt2/modeling_gpt2.py#L1454
-    return reward_logits[torch.arange(reward_logits.size(0), device=reward_logits.device), sequence_lengths]
-
+    return reward_logits[torch.arange(reward_logits.size(0), device=reward_logits.device), sequence_lengths].squeeze(-1)
 
 def evaluate(args: Args, accelerator, tokenizer, model, dataloader):
     model.eval()
@@ -436,17 +449,23 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
 
     norm_dataset = load_dataset(args.query_dataset, split="train")
-    norm_dataset = norm_dataset.with_format("torch", columns=["query_token", "reference_response_token"])
+    norm_dataset = norm_dataset.with_format("torch", columns=["query_token", "reference_response_token", "query_reference_response_token"])
     norm_dataset = norm_dataset.shuffle(seed=local_seed)
     norm_dataloader = DataLoader(norm_dataset, batch_size=args.local_eval_batch_size)
     items = defaultdict(list)
     norm_dataloader = accelerator.prepare(norm_dataloader)
+    rtol = 1e-2
     with torch.no_grad():
         for data in tqdm(norm_dataloader):
             reference_responses = data["reference_response_token"].to(device, non_blocking=True)
             queries = data["query_token"].to(device, non_blocking=True)
-            query_responses = torch.cat((queries, reference_responses), dim=1)
+            query_responses = data["query_reference_response_token"].to(device, non_blocking=True)
+            cat_query_responses = torch.cat((queries, reference_responses), dim=1)
+            cat_predicted_reward= get_reward(model, cat_query_responses, tokenizer, context_length=queries.shape[1])
             predicted_reward = get_reward(model, query_responses, tokenizer)
+
+            unexpecte_reward_diff = predicted_reward - cat_predicted_reward
+            unexpecte_reward_diff_gt_rtol = unexpecte_reward_diff.abs() > rtol
             predicted_reward = accelerator.gather(predicted_reward)
             queries = accelerator.gather(queries)
             reference_responses = accelerator.gather(reference_responses)
@@ -454,6 +473,8 @@ if __name__ == "__main__":
                 items["query"].append(tokenizer.decode(queries[i], skip_special_tokens=True))
                 items["reference_response"].append(tokenizer.decode(reference_responses[i]))
                 items["predicted_reward"].append(predicted_reward[i].item())
+                items["unexpecte_reward_diff"].append(unexpecte_reward_diff[i].item())
+                items["unexpecte_reward_diff_gt_rtol"].append(unexpecte_reward_diff_gt_rtol[i].item())
 
     if accelerator.is_main_process:
         norm_df = pd.DataFrame(items)
@@ -466,6 +487,8 @@ if __name__ == "__main__":
             "std": norm_df["predicted_reward"].std(),
             "max": norm_df["predicted_reward"].max(),
             "min": norm_df["predicted_reward"].min(),
+            "unexpecte_reward_diff_mean": norm_df["unexpecte_reward_diff"].mean(),
+            "unexpecte_reward_diff_gt_rtol_mean": norm_df["unexpecte_reward_diff_gt_rtol"].mean(),
         }
         for stat_name, stat_value in stats.items():
             writer.add_scalar(f"eval/rm/normalized_{stat_name}", stat_value, global_step)

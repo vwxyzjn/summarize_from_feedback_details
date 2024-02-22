@@ -141,6 +141,8 @@ class Args:
     """the sampling temperature"""
     penalty_reward_value: int = -1
     """the reward value for responses that do not contain `truncate_token_id`"""
+    non_eos_penalty: bool = True
+    """whether to penalize responses that do not contain `truncate_token_id`"""
     offload: bool = False
     """Whether to offload ref policy and reward model to CPU"""
     reward_model_path: str = ""
@@ -681,7 +683,8 @@ if __name__ == "__main__":
             # responses not passing that filter will receive a low (fixed) score
             # only query humans on responses that pass that filter
             contain_pad_token = torch.any(postprocessed_responses == tokenizer.pad_token_id, dim=-1)
-            scores = torch.where(contain_pad_token, scores, torch.full_like(scores, args.penalty_reward_value))
+            if args.non_eos_penalty:
+                scores = torch.where(contain_pad_token, scores, torch.full_like(scores, args.penalty_reward_value))
             accelerator.print(f"{scores=}, {(contain_pad_token.sum() / len(contain_pad_token))=}")
 
             # 4. compute rewards
