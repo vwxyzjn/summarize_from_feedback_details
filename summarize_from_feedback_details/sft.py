@@ -289,7 +289,6 @@ if __name__ == "__main__":
     dataset = load_dataset(args.query_dataset, split="train")
     dataset = dataset.with_format("torch", columns=["query_reference_response_token"])
     dataloader = DataLoader(dataset, batch_size=args.local_micro_batch_size, shuffle=True)
-    validation_dataset = load_dataset(args.query_dataset, split="validation")
     eval_dataloaders = {}
     for split in ["validation", "test"]:
         eval_dataset = load_dataset(args.query_dataset, split=split)

@@ -15,7 +15,7 @@ import torch.optim as optim
 import tyro
 from accelerate import Accelerator
 from accelerate.utils import gather_object, broadcast
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from rich.console import Console
 from rich.pretty import pprint
 from rich.table import Table
@@ -461,11 +461,12 @@ if __name__ == "__main__":
             queries = data["query_token"].to(device, non_blocking=True)
             query_responses = data["query_reference_response_token"].to(device, non_blocking=True)
             cat_query_responses = torch.cat((queries, reference_responses), dim=1)
-            cat_predicted_reward= get_reward(model, cat_query_responses, tokenizer, context_length=queries.shape[1])
+            cat_predicted_reward = get_reward(model, cat_query_responses, tokenizer, context_length=queries.shape[1])
             predicted_reward = get_reward(model, query_responses, tokenizer)
-
             unexpecte_reward_diff = predicted_reward - cat_predicted_reward
             unexpecte_reward_diff_gt_rtol = unexpecte_reward_diff.abs() > rtol
+            unexpecte_reward_diff = accelerator.gather(unexpecte_reward_diff)
+            unexpecte_reward_diff_gt_rtol = accelerator.gather(unexpecte_reward_diff_gt_rtol)
             predicted_reward = accelerator.gather(predicted_reward)
             queries = accelerator.gather(queries)
             reference_responses = accelerator.gather(reference_responses)
@@ -479,7 +480,9 @@ if __name__ == "__main__":
     if accelerator.is_main_process:
         norm_df = pd.DataFrame(items)
         os.makedirs(f"eval_tables/{args.run_name}", exist_ok=True)
-        norm_df.to_csv(f"eval_tables/{args.run_name}/eval_{update}_normalized.csv")
+        norm_ds = Dataset.from_pandas(norm_df)
+        # norm_df.to_csv(f"eval_tables/{args.run_name}/eval_{update}_normalized.csv")
+        norm_ds.save_to_disk(f"eval_tables/{args.run_name}/eval_{update}_normalized")
         if args.track:
             wandb.log({"samples/normalized": wandb.Table(dataframe=norm_df)}, step=update)
         stats = {
