@@ -1,3 +1,4 @@
+import copy
 import multiprocessing
 import os
 import time
@@ -18,13 +19,15 @@ api = HfApi()
 
 
 """
-poetry run python summarize_from_feedback_details/tldr_dataset.py
-poetry run python summarize_from_feedback_details/tldr_dataset.py \
+poetry run python -i summarize_from_feedback_details/tldr_dataset.py \
     --base_model=EleutherAI/pythia-1b-deduped \
-    --max_sft_response_length=53 \
-    --max_sft_query_response_length=562 \
-    --max_rm_response_length=169 \
-    --max_rm_query_response_length=638
+    --tldr_params.max_sft_response_length=53 \
+    --tldr_params.max_sft_query_response_length=562 \
+    --tldr_params.max_rm_response_length=169 \
+    --tldr_params.max_rm_query_response_length=638 \
+    --cnndm_params.max_rm_response_length=155 \
+    --cnndm_params.max_rm_query_response_length=2021 \
+    --push_to_hub \
 
 poetry run python -i summarize_from_feedback_details/tldr_dataset.py \
     --base_model=EleutherAI/pythia-1b-deduped \
@@ -34,10 +37,9 @@ poetry run python -i summarize_from_feedback_details/tldr_dataset.py \
     --tldr_params.max_rm_query_response_length=638 \
     --cnndm_params.max_rm_response_length=155 \
     --cnndm_params.max_rm_query_response_length=2021 \
-    --hf_entity=cleanrl \
     --push_to_hub \
-    --tldr_params.padding="pad_token" \
-    --cnndm_params.padding="pad_token" \
+    --tldr_params.padding="empty_space" \
+    --cnndm_params.padding="empty_space" \
 """
 
 
@@ -62,18 +64,19 @@ class Args:
     hf_entity: str = None
     push_to_hub: bool = False
     check_length_correctness: bool = True
+    debug: bool = False
     tldr_params: TaskQueryHParams = field(
         default_factory=lambda: TaskQueryHParams(
             length=512,
             format_str="SUBREDDIT: r/{subreddit}\n\nTITLE: {title}\n\nPOST: {post}\n\nTL;DR:",
             truncate_field="post",
             truncate_text="\n",
-            padding="empty_space",
+            padding="pad_token",
             pad_side="left",
-            max_sft_response_length=53,  # 48
-            max_sft_query_response_length=562,  # 512 + 48
-            max_rm_response_length=169,  # 153
-            max_rm_query_response_length=638,  #  512 + 153
+            max_sft_response_length=53,
+            max_sft_query_response_length=562,
+            max_rm_response_length=169,
+            max_rm_query_response_length=638,
         )
     )
     cnndm_params: TaskQueryHParams = field(
@@ -82,10 +85,10 @@ class Args:
             format_str="Article:\n{article}\n\nTL;DR:\n",
             truncate_field="article",
             truncate_text="\n",
-            padding="empty_space",
+            padding="pad_token",
             pad_side="left",
-            max_rm_response_length=155,  # 153
-            max_rm_query_response_length=2021,  #  512 + 153
+            max_rm_response_length=155,
+            max_rm_query_response_length=2021,
         )
     )
 
@@ -204,19 +207,20 @@ if __name__ == "__main__":
             y["query_reference_response_token"] = tokenizer.encode(
                 y["query_reference_response"],
                 padding="max_length",
-                max_length=args.max_sft_query_response_length,
+                max_length=args.tldr_params.max_sft_query_response_length,
                 truncation=True,
             )
+        y["query_reference_response_token_response_label"] = copy.deepcopy(y["query_reference_response_token"])
+        unpadded_query_token = [token for token in y["query_token"] if token != tokenizer.pad_token_id]
+        y["query_reference_response_token_response_label"][:len(unpadded_query_token)] = [tokenizer.pad_token_id for _ in range(len(unpadded_query_token))]
         y["query_reference_response_token_len"] = len(tokenizer.encode(y["query_reference_response"]))
         return y
 
-    sft_ds = sft_ds.map(process_query_data, load_from_cache_file=False, num_proc=multiprocessing.cpu_count())
+    sft_ds = sft_ds.map(process_query_data, load_from_cache_file=False, num_proc=1 if args.debug else multiprocessing.cpu_count())
     if args.push_to_hub:
-        sft_ds.push_to_hub(f"{args.hf_entity}/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_{timestamp}")
-        sft_card = RepoCard.load(
-            f"{args.hf_entity}/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_{timestamp}",
-            repo_type="dataset",
-        )
+        sft_dataset_hf_path = f"{args.hf_entity}/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_{timestamp}"
+        sft_ds.push_to_hub(sft_dataset_hf_path)
+        sft_card = RepoCard.load(sft_dataset_hf_path, repo_type="dataset")
         sft_card.text = f"""\
 # TL;DR SFT Dataset for OpenAI's [Summarize from Feedback](https://openai.com/blog/summarization/) task
 
@@ -247,10 +251,7 @@ These columns are added by this preprocessing script:
 {pformat(vars(args))}
 ```
 """
-        sft_card.push_to_hub(
-            f"{args.hf_entity}/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_{timestamp}",
-            repo_type="dataset",
-        )
+        sft_card.push_to_hub(sft_dataset_hf_path, repo_type="dataset")
 
     cnndm_batches = ["batch0_cnndm", "cnndm0", "cnndm2"]
     label_ds = load_dataset("openai/summarize_from_feedback", "comparisons")
@@ -260,11 +261,13 @@ These columns are added by this preprocessing script:
     def process_response_data(x):
         # the `x['summaries'][0]['text']` in `openai/summarize_from_feedback` `comaprisons`
         # DOES HAVE a leading space so we are just adding the `<|endoftext|>` token
-        response0 = f"{x['summaries'][0]['text']}<|endoftext|>"
-        response1 = f"{x['summaries'][1]['text']}<|endoftext|>"
-        response0_policy = x["summaries"][0]["policy"]
-        response1_policy = x["summaries"][1]["policy"]
-        policies = "--".join(sorted([response0_policy, response1_policy]))
+        choice = x["choice"] 
+        chosen = f"{x['summaries'][choice]['text']}<|endoftext|>"
+        rejected = f"{x['summaries'][1 - choice]['text']}<|endoftext|>"
+
+        chosen_policy = x["summaries"][choice]["policy"]
+        rejected_policy = x["summaries"][1 - choice]["policy"]
+        policies = "--".join(sorted([chosen_policy, rejected_policy]))
         format_params = args.cnndm_params if x["batch"] in cnndm_batches else args.tldr_params
         max_rm_response_length = (
             args.cnndm_params.max_rm_response_length
@@ -278,42 +281,49 @@ These columns are added by this preprocessing script:
         )
         y = {
             **process_query(x["info"], encoder=tokenizer, hparams=format_params),
-            "response0": response0,
-            "response0_token": tokenizer.encode(
-                response0, padding="max_length", max_length=max_rm_response_length, truncation=True
+            "chosen": chosen,
+            "chosen_token": tokenizer.encode(
+                chosen, padding="max_length", max_length=max_rm_response_length, truncation=True
             ),
-            "response0_token_len": len(tokenizer.encode(response0)),
-            "response1": response1,
-            "response1_token": tokenizer.encode(
-                response1, padding="max_length", max_length=max_rm_response_length, truncation=True
+            "chosen_token_len": len(tokenizer.encode(chosen)),
+            "rejected": rejected,
+            "rejected_token": tokenizer.encode(
+                rejected, padding="max_length", max_length=max_rm_response_length, truncation=True
             ),
-            "response1_token_len": len(tokenizer.encode(response1)),
-            "response0_policy": response0_policy,
-            "response1_policy": response1_policy,
+            "rejected_token_len": len(tokenizer.encode(rejected)),
+            "chosen_policy": chosen_policy,
+            "rejected_policy": rejected_policy,
             "policies": policies,
         }
-        y["query_response0"] = y["query"].strip() + y["response0"]
+        y["query_chosen"] = y["query"].strip() + y["chosen"]
         # if padding is space, then we can just concatenate the tokens
         if args.tldr_params.padding == "empty_space":
-            y["query_response0_token"] = y["query_token"] + y["response0_token"]
+            y["query_chosen_token"] = y["query_token"] + y["chosen_token"]
         else:
-            y["query_response0_token"] = tokenizer.encode(
-                y["query_response0"], padding="max_length", max_length=max_rm_query_response_length, truncation=True
+            y["query_chosen_token"] = tokenizer.encode(
+                y["query_chosen"], padding="max_length", max_length=max_rm_query_response_length, truncation=True
             )
-        y["query_response0_token_len"] = len(tokenizer.encode(y["query_response0"]))
-        y["query_response1"] = y["query"].strip() + y["response1"]
+        y["query_chosen_token_len"] = len(tokenizer.encode(y["query_chosen"]))
+        y["query_rejected"] = y["query"].strip() + y["rejected"]
+        # if padding is space, then we can just concatenate the tokens
         if args.tldr_params.padding == "empty_space":
-            y["query_response1_token"] = y["query_token"] + y["response1_token"]
+            y["query_rejected_token"] = y["query_token"] + y["rejected_token"]
         else:
-            y["query_response1_token"] = tokenizer.encode(
-                y["query_response1"], padding="max_length", max_length=max_rm_query_response_length, truncation=True
+            y["query_rejected_token"] = tokenizer.encode(
+                y["query_rejected"], padding="max_length", max_length=max_rm_query_response_length, truncation=True
             )
-        y["query_response1_token_len"] = len(tokenizer.encode(y["query_response1"]))
+        y["query_rejected_token_len"] = len(tokenizer.encode(y["query_rejected"]))
         y["query_token_len"] = len(tokenizer.encode(y["query"]))
+        unpadded_query_token = [token for token in y["query_token"] if token != tokenizer.pad_token_id]
+        y["query_chosen_token_response_label"] = copy.deepcopy(y["query_chosen_token"])
+        y["query_chosen_token_response_label"][:len(unpadded_query_token)] = [tokenizer.pad_token_id for _ in range(len(unpadded_query_token))]
+        y["query_rejected_token_response_label"] = copy.deepcopy(y["query_rejected_token"])
+        y["query_rejected_token_response_label"][:len(unpadded_query_token)] = [tokenizer.pad_token_id for _ in range(len(unpadded_query_token))]
         return y
 
-    label_ds = label_ds.map(process_response_data, load_from_cache_file=False, num_proc=multiprocessing.cpu_count())
+    label_ds = label_ds.map(process_response_data, load_from_cache_file=False, num_proc=1 if args.debug else multiprocessing.cpu_count())
     if args.push_to_hub:
+        rm_dataset_hf_path = f"{args.hf_entity}/summarize_from_feedback_oai_preprocessing_{timestamp}"
         label_ds.push_to_hub(f"{args.hf_entity}/summarize_from_feedback_oai_preprocessing_{timestamp}")
 
     ####################################
@@ -357,37 +367,37 @@ These columns are added by this preprocessing script:
     offset = len(sft_ds)
     for _, split in enumerate(label_ds.keys()):
         df = label_ds[split].to_pandas()
-        axs[j].hist(df["response0_token_len"], bins=100)
-        axs[j].set_title(f"{split} split: response0 token length\nmax_length={max(df['response0_token_len'])}")
-        axs[j + 1].hist(df["response1_token_len"], bins=100)
-        axs[j + 1].set_title(f"{split} split: response1 token length\nmax_length={max(df['response1_token_len'])}")
-        axs[j + 2].hist(df["query_response0_token_len"], bins=100)
+        axs[j].hist(df["chosen_token_len"], bins=100)
+        axs[j].set_title(f"{split} split: chosen token length\nmax_length={max(df['chosen_token_len'])}")
+        axs[j + 1].hist(df["rejected_token_len"], bins=100)
+        axs[j + 1].set_title(f"{split} split: rejected token length\nmax_length={max(df['rejected_token_len'])}")
+        axs[j + 2].hist(df["query_chosen_token_len"], bins=100)
         axs[j + 2].set_title(
-            f"{split} split: query.strip() + response0 token length\nmax_length={max(df['query_response0_token_len'])}"
+            f"{split} split: query.strip() + chosen token length\nmax_length={max(df['query_chosen_token_len'])}"
         )
-        axs[j + 3].hist(df["query_response1_token_len"], bins=100)
+        axs[j + 3].hist(df["query_rejected_token_len"], bins=100)
         axs[j + 3].set_title(
-            f"{split} split: query.strip() + response1 token length\nmax_length={max(df['query_response1_token_len'])}"
+            f"{split} split: query.strip() + rejected token length\nmax_length={max(df['query_rejected_token_len'])}"
         )
         axs[j + 4].hist(df["query_token_len"], bins=100)
         axs[j + 4].set_title(f"{split} split: query token length\nmax_length={max(df['query_token_len'])}")
         if split in ["train", "validation"]:
             calculated_tldr_params.max_rm_response_length = max(
-                calculated_tldr_params.max_rm_response_length, max(df["response0_token_len"]), max(df["response1_token_len"])
+                calculated_tldr_params.max_rm_response_length, max(df["chosen_token_len"]), max(df["rejected_token_len"])
             )
             calculated_tldr_params.max_rm_query_response_length = max(
                 calculated_tldr_params.max_rm_query_response_length,
-                max(df["query_response0_token_len"]),
-                max(df["query_response1_token_len"]),
+                max(df["query_chosen_token_len"]),
+                max(df["query_rejected_token_len"]),
             )
         elif split == "validation_cnndm":
             calculated_cnndm_params.max_rm_response_length = max(
-                calculated_cnndm_params.max_rm_response_length, max(df["response0_token_len"]), max(df["response1_token_len"])
+                calculated_cnndm_params.max_rm_response_length, max(df["chosen_token_len"]), max(df["rejected_token_len"])
             )
             calculated_cnndm_params.max_rm_query_response_length = max(
                 calculated_cnndm_params.max_rm_query_response_length,
-                max(df["query_response0_token_len"]),
-                max(df["query_response1_token_len"]),
+                max(df["query_chosen_token_len"]),
+                max(df["query_rejected_token_len"]),
             )
         else:
             raise ValueError(f"Unknown dataset split: {split}")
@@ -425,7 +435,7 @@ These columns are added by this preprocessing script:
     label_ds = label_ds.flatten()
     for i, split in enumerate(label_ds.keys()):
         df = label_ds[split].to_pandas()
-        cat = pd.concat([df["response0_policy"], df["response1_policy"]], axis=0)
+        cat = pd.concat([df["chosen_policy"], df["rejected_policy"]], axis=0)
         cat.hist(ax=axs[i], xrot=90, orientation="horizontal")
         axs[i].set_title(f"{split} split: policy distribution")
     fig.suptitle("Policy distribution")
@@ -460,3 +470,6 @@ These columns are added by this preprocessing script:
             repo_id=f"{args.hf_entity}/summarize_from_feedback_oai_preprocessing_{timestamp}",
             repo_type="dataset",
         )
+        print(f"✨ Pushed to hub: https://huggingface.co/datasets/{sft_dataset_hf_path}")
+        print(f"✨ Pushed to hub: https://huggingface.co/datasets/{rm_dataset_hf_path}")
+
