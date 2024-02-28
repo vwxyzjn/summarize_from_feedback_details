@@ -140,20 +140,51 @@ ppo_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True,
 ).to(device)
 
-# https://wandb.ai/costa-huang/tldr_summarize/runs/o6l302qo
-# https://huggingface.co/vwxyzjn/EleutherAI_pythia-1b-deduped__dpo__tldr/tree/dpo__77713__1707268320
+# https://wandb.ai/costa-huang/tldr_summarize/runs/tewm564g
+# https://huggingface.co/vwxyzjn/EleutherAI_pythia-1b-deduped__dpo__tldr/tree/dpo__55513__1707379566
 dpo_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
     "vwxyzjn/EleutherAI_pythia-1b-deduped__dpo__tldr",
-    revision="dpo__77713__1707268320",
+    revision="dpo__55513__1707379566",
     trust_remote_code=True,
 ).to(device)
 
-# https://wandb.ai/costa-huang/tldr_summarize/runs/jsj57urt
-# https://huggingface.co/vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr/tree/reward__55513__1706651113
-rm: PreTrainedModel = ScalarModel.from_pretrained(
-    "vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr",
+# # https://wandb.ai/costa-huang/tldr_summarize/runs/jsj57urt
+# # https://huggingface.co/vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr/tree/reward__55513__1706651113
+# scalar_model_config = ScalarModelConfig.from_pretrained(
+#     "vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr",
+#     revision="reward__55513__1706651113",
+#     trust_remote_code=True,
+# )
+# # hack to remove the path
+# # models/EleutherAI/pythia-1b-deduped/sft_model_55513 -> EleutherAI/pythia-1b-deduped
+# original_model = "/".join(scalar_model_config.base_config["_name_or_path"].split("/")[1:3])
+# scalar_model_config.base_config["_name_or_path"] = original_model
+# scalar_model_config.base_model = original_model
+# rm: PreTrainedModel = ScalarModel.from_pretrained(
+#     "vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr",
+#     revision="reward__55513__1706651113",
+#     trust_remote_code=True,
+#     config=scalar_model_config,
+# ).to(device)
+
+# "Gold" RM (a much larger model)
+# https://wandb.ai/costa-huang/tldr_summarize/runs/ddw0ixx9
+# https://huggingface.co/vwxyzjn/EleutherAI_pythia-6.9b-deduped__reward__tldr/tree/reward__55513__1706651113
+scalar_model_config = ScalarModelConfig.from_pretrained(
+    "vwxyzjn/EleutherAI_pythia-6.9b-deduped__reward__tldr",
     revision="reward__55513__1706651113",
     trust_remote_code=True,
+)
+# hack to remove the path
+# models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
+original_model = "/".join(scalar_model_config.base_config["_name_or_path"].split("/")[1:3])
+scalar_model_config.base_config["_name_or_path"] = original_model
+scalar_model_config.base_model = original_model
+rm: PreTrainedModel = ScalarModel.from_pretrained(
+    "vwxyzjn/EleutherAI_pythia-6.9b-deduped__reward__tldr",
+    revision="reward__55513__1706651113",
+    trust_remote_code=True,
+    config=scalar_model_config,
 ).to(device)
 
 
