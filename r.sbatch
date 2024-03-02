@@ -5,6 +5,7 @@
 #SBATCH --cpus-per-gpu=12
 #SBATCH --ntasks=1
 #SBATCH --output=slurm/logs/%x_%j.out
+#SBATCH --requeue
 
 module load cuda/12.1
 

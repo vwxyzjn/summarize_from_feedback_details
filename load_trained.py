@@ -1,4 +1,5 @@
 from collections import defaultdict
+
 import numpy as np
 import pandas as pd
 import torch
@@ -9,17 +10,17 @@ from rich.table import Table
 from transformers import (
     AutoConfig,
     AutoModel,
+    AutoModelForCausalLM,
     AutoTokenizer,
+    GenerationConfig,
     PretrainedConfig,
     PreTrainedModel,
-    AutoModelForCausalLM,
-    GenerationConfig,
 )
-
 
 ######
 # RM model definition
 ######
+
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.normal_(layer.weight, std=std)
@@ -69,6 +70,7 @@ class ScalarModel(PreTrainedModel):
 # Utility functions
 ######
 
+
 def generate(lm_backbone, queries, tokenizer, generation_config):
     """generate in a way that does not affect padding tokens"""
     context_length = queries.shape[1]
@@ -82,6 +84,7 @@ def generate(lm_backbone, queries, tokenizer, generation_config):
         return_dict_in_generate=True,
     )
     return torch.cat((queries, output.sequences[:, context_length:]), dim=1)
+
 
 def get_reward(model, query_responses, tokenizer):
     attention_mask = query_responses != tokenizer.pad_token_id
@@ -195,11 +198,11 @@ for i in range(len(sft_dataset["validation"])):
     query_reference_response = torch.Tensor(sft_dataset["validation"][i]["query_reference_response_token"]).to(device).long()
     with torch.no_grad():
         sft_query_response = generate(sft_model, query.unsqueeze(0), tokenizer, validation_generation_config)
-        sft_response = sft_query_response[:, query.shape[0]:]
+        sft_response = sft_query_response[:, query.shape[0] :]
         ppo_query_response = generate(ppo_model, query.unsqueeze(0), tokenizer, validation_generation_config)
-        ppo_response = ppo_query_response[:, query.shape[0]:]
+        ppo_response = ppo_query_response[:, query.shape[0] :]
         dpo_query_response = generate(dpo_model, query.unsqueeze(0), tokenizer, validation_generation_config)
-        dpo_response = dpo_query_response[:, query.shape[0]:]
+        dpo_response = dpo_query_response[:, query.shape[0] :]
         sft_reward = get_reward(rm, sft_query_response, tokenizer)
         ppo_reward = get_reward(rm, ppo_query_response, tokenizer)
         dpo_reward = get_reward(rm, dpo_query_response, tokenizer)
