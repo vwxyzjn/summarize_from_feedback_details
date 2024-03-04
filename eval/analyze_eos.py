@@ -3,16 +3,23 @@ import pandas as pd
 from transformers import AutoTokenizer
 import os
 
-tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-2.7B")
+endings = ["gpt-3.5-turbo-0125.csv", "csv_judged.csv", "_vs_sft11.csv"]
+
+tokenizer = AutoTokenizer.from_pretrained(
+    "EleutherAI/pythia-160m",
+    padding_side="right",
+    trust_remote_code=True,
+)
+# we use the padding token manually but do not resize the token embedding of the model
 tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-max_response_token_length = 51
+max_response_token_length = 200
 
 models = defaultdict(list)
 for root, dirs, files in os.walk("sampled_data"):
     for file in files:
-        if file.endswith(".csv") and not file.endswith("csv_judged.csv"):
+        if file.endswith(".csv") and not any([file.endswith(ending) for ending in endings]):
             csv = os.path.join(root, file)
-            exp_name = csv.split("/")[1]
+            exp_name = csv.split("/")[2]
             model_name = exp_name + "/" + "/".join(csv[csv.find("EleutherAI"):].split("/")[:2])
             models[model_name].append(csv)
 
@@ -22,10 +29,7 @@ for model_name in sorted(models.keys()):
         df = pd.read_csv(csv)
         if "response" in df.columns:
             df["postprocessed_response"] = df["response"]
-        # tokenize df["postprocessed_response"]
-        df["tokenized"] = df["postprocessed_response"].apply(
-            lambda x: tokenizer(x, max_length=max_response_token_length, truncation=True, padding="max_length"
-                                )["input_ids"])
-        # determine if it ends with an EOS token
-        df["ends_with_eos"] = df["tokenized"].apply(lambda x: x[-1] == tokenizer.pad_token_id)
-        print(f"seed{seed_idx}: ====ends_with_eos perecentage", df["ends_with_eos"].sum() / len(df))
+
+        df["token_len"] = df["postprocessed_response"].apply(
+            lambda x: len(tokenizer(x)["input_ids"]))
+        print(f"{seed_idx=}, {df['token_len'].mean()=}")

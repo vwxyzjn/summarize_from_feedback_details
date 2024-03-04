@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --output=slurm/logs/%x_%j.out
 #SBATCH --requeue
-#SBATCH --array=0-3%1
+#SBATCH --array=0-3%2
 #SBATCH --qos=high
 #SBATCH --exclusive
 ## this is for 6.9b jobs only as they always get preempted
