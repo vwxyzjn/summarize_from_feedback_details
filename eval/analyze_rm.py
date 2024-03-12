@@ -7,12 +7,7 @@ import matplotlib.pyplot as plt
 datasets.disable_progress_bar()
 
 
-def check_rm_agree(directory_path):
-    csv_files = [
-        file_name
-        for file_name in glob.glob(directory_path + "/**/*.csv", recursive=True)
-        if "gpt-3.5-turbo-0125" in file_name
-    ]
+def get_rm_agree_data(csv_files):
     datas = datasets.load_dataset("csv", data_files=csv_files)["train"]
     total_num = len(datas)
 
@@ -30,9 +25,26 @@ def check_rm_agree(directory_path):
         > np.array(datas_preferred_ours["reference_scores"])
     )
 
-    agreed_ratio = (agreed_preferred_reference + agreed_preferred_ours) / total_num
+    return agreed_preferred_reference, agreed_preferred_ours, total_num
 
-    return agreed_ratio
+
+def check_rm_agree(directory_path):
+    csv_files = [
+        file_name
+        for file_name in glob.glob(directory_path + "/**/*.csv", recursive=True)
+        if "gpt-3.5-turbo-0125" in file_name
+    ]
+
+    total_agreed_ratio = []
+    for file in csv_files:
+        agreed_preferred_reference, agreed_preferred_ours, total_num = (
+            get_rm_agree_data([file])
+        )
+        agreed_ratio = (agreed_preferred_reference + agreed_preferred_ours) / total_num
+        print(f"Agreed ratio for {file} is {agreed_ratio}")
+        total_agreed_ratio.append(agreed_ratio)
+
+    return total_agreed_ratio
 
 
 model_sizes = {
@@ -57,29 +69,29 @@ need_check_paths = {
 
 colors = sns.color_palette("colorblind", n_colors=len(need_check_paths))
 for exp_name_path, color in zip(need_check_paths.items(), colors):
-    xs = []
-    ys = []
-
-    for model_name, path in exp_name_path[1].items():
-        xs.append(model_sizes[model_name])
-        ys.append(check_rm_agree(path))
-
     if exp_name_path[0] == "ppo_left_padding":
         label = "Our PPO Reproduction"
     elif exp_name_path[0] == "ppo_left_padding_new":
         label = "Our PPO Reproduction New"
 
-    plt.scatter(
+    xs = []
+    ys_mean = []
+    ys_std = []
+
+    for model_name, path in exp_name_path[1].items():
+        xs.append(model_sizes[model_name])
+        ys_mean.append(np.mean((check_rm_agree(path))))
+        ys_std.append(np.std((check_rm_agree(path))))
+
+    plt.errorbar(
         xs,
-        ys,
+        ys_mean,
+        yerr=ys_std,
         label=label,
+        marker="o",
         color=color,
-        alpha=0.5,
+        capsize=5,
     )
-
-
-# Adding the human baseline and ensemble of humans
-# plt.axhline(y=0.5, color="black", linestyle="-.", label="reference summary")
 
 # Setting the title and labels
 plt.title("Reward Model scaling")
@@ -92,4 +104,4 @@ plt.legend()
 # Display the plot
 plt.grid(True, which="both", ls="--", c="0.7")
 plt.tight_layout()
-plt.savefig('rm_scale_plot.png')
+plt.savefig("rm_scale_plot.png")
