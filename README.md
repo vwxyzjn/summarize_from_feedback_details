@@ -21,6 +21,16 @@ poetry install
 pip install -r requirements.txt
 ```
 
+## Run inference
+
+```
+python visualize_tokens.py
+```
+
+[![asciicast](https://asciinema.org/a/648179.svg)](https://asciinema.org/a/648179)
+
+
+
 To run a hello world example, you can run the `hello_world.sh` script. For the full-scaling laws experiment, you can run 
 
 ```
@@ -34,9 +44,9 @@ The command above runs end-to-end RLHF experiments with 4 random seeds. We then 
 
 | Rouge Score (sft.py) | Reward Model (reward.py) | 
 | --- | --- | 
-| ![](eval/rouge_score_plot.png) | ![](eval/rm_scale_plot.png) |
+| ![](eval/images/rouge_score_plot.png) | ![](eval/images/rm_scale_plot.png) |
 | RLHF Policy (ppo_left_padding.py) | |
-| ![](eval/rlhf_scale_plot.png) | |
+| ![](eval/images/rlhf_scale_plot.png) | |
 
 
 ### Dataset Information

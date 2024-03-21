@@ -68,8 +68,8 @@ df = df.groupby(["base_model", "exp", "seed"]).agg(lambda x: x.tolist()[0])
 sft_record = RunRecord(**df.loc[("EleutherAI/pythia-1b-deduped", "sft", 55513)])
 ppo_record = RunRecord(**df.loc[("EleutherAI/pythia-1b-deduped", "ppo_left_padding_new_nowhiten_reward", 55513)])
 dpo_record = RunRecord(**df.loc[("EleutherAI/pythia-1b-deduped", "dpo", 55513)])
-# rm_record = RunRecord(**df.loc[("EleutherAI/pythia-1b-deduped", "reward", 55513)])
-rm_record = RunRecord(**df.loc[("EleutherAI/pythia-6.9b-deduped", "reward", 55513)]) # larger (in some sense gold) RM
+rm_record = RunRecord(**df.loc[("EleutherAI/pythia-1b-deduped", "reward", 55513)])
+# rm_record = RunRecord(**df.loc[("EleutherAI/pythia-6.9b-deduped", "reward", 55513)]) # larger (in some sense gold) RM
 
 ######
 # RM model definition
