@@ -131,8 +131,12 @@ class Args:
     """Whether to offload ref policy and reward model to CPU"""
     reward_model_path: str = ""
     """the path to the reward model"""
+    reward_model_revision: Optional[str] = None
+    """the revision of the reward model"""
     sft_model_path: str = "EleutherAI/pythia-160m"
     """the path to the sft model"""
+    sft_model_revision: Optional[str] = None
+    """the revision of the sft model"""
     lora_config: LoraConfig = field(
         default_factory=lambda: LoraConfig(
             r=8,
@@ -544,16 +548,21 @@ if __name__ == "__main__":
     else:
         base_critic: PreTrainedModel = ScalarModel.from_pretrained(
             args.reward_model_path,
+            revision=args.reward_model_revision,
             trust_remote_code=True,
         )
         reward_model: PreTrainedModel = ScalarModel.from_pretrained(
             args.reward_model_path,
+            revision=args.reward_model_revision,
             trust_remote_code=True,
         )
     critic = get_peft_model(base_critic, args.lora_config)
 
     base_policy = AutoModelForCausalLM.from_pretrained(
-        args.sft_model_path, config=model_config, trust_remote_code=True
+        args.sft_model_path,
+        revision=args.sft_model_revision,
+        config=model_config,
+        trust_remote_code=True,
     )
     policy = get_peft_model(base_policy, args.lora_config)
     for module in [policy, critic, reward_model]:
