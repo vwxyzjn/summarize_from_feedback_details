@@ -16,19 +16,20 @@ DEBUG=${DEBUG:-false}
 TRACK_ARG=$([ "$DEBUG" = false ] && echo "--track" || echo "")
 
 FP16=${FP16:-false}
+NGPUS=${NGPUS:-4}
 
 if [ "$FP16" = true ]; then
     DS_CONFIG=deepspeed_4gpu_fp16.yaml
     local_rollout_forward_batch_size=32 # smaller fits better on GPU
-    gradient_accumulation_steps=128 # bigger fits better on GPU
-    local_micro_batch_size=4 # smaller fits better on GPU
+    gradient_accumulation_steps=64 # bigger fits better on GPU
+    local_micro_batch_size=8 # smaller fits better on GPU
     local_eval_batch_size=1 # smaller fits better on GPU
 else
     DS_CONFIG=deepspeed_1gpu.yaml
     local_rollout_forward_batch_size=64 # smaller fits better on GPU
     gradient_accumulation_steps=32 # bigger fits better on GPU
     local_micro_batch_size=16 # smaller fits better on GPU
-    local_eval_batch_size=2 # smaller fits better on GPU
+    local_eval_batch_size=8 # smaller fits better on GPU
 fi
 
 # vary the following parameters to fit your GPU memory
