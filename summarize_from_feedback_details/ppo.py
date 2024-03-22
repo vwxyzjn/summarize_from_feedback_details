@@ -23,15 +23,9 @@ from rich.pretty import pprint
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    GenerationConfig,
-    PretrainedConfig,
-    PreTrainedModel,
-)
+from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM,
+                          AutoTokenizer, GenerationConfig, PretrainedConfig,
+                          PreTrainedModel)
 
 torch.set_printoptions(precision=4, sci_mode=False)
 api = HfApi()
@@ -179,11 +173,11 @@ def parse_args() -> tuple[Args, Accelerator]:
     time_int = broadcast(time_tensor, 0).item()  # avoid different timestamps across processes
     args.run_name = f"{args.exp_name}__{args.seed}__{time_int}"
     if args.push_to_hub:
-        if args.hf_repo_id is None: # auto-generate one
+        if args.hf_repo_id is None:  # auto-generate one
             args.hf_repo_id = f"{args.base_model.replace('/', '_')}__{args.exp_name}__tldr"
         if args.hf_entity is None:  # find the current user
             args.hf_entity = api.whoami()["name"]
-        if "/" not in args.hf_repo_id: # prepend the current user
+        if "/" not in args.hf_repo_id:  # prepend the current user
             args.hf_repo_id = f"{args.hf_entity}/{args.hf_repo_id}"
         if args.hf_repo_revision is None:  # auto-generate one
             args.hf_repo_revision = args.run_name
@@ -294,7 +288,10 @@ def get_reward(model, query_responses, tokenizer, context_length):
     # https://github.com/huggingface/transformers/blob/dc68a39c8111217683bf49a4912d0c9018bab33d/src/transformers/models/gpt2/modeling_gpt2.py#L1454
     return (
         reward_logits,
-        reward_logits[torch.arange(reward_logits.size(0), device=reward_logits.device), sequence_lengths].squeeze(-1),
+        reward_logits[
+            torch.arange(reward_logits.size(0), device=reward_logits.device),
+            sequence_lengths,
+        ].squeeze(-1),
         sequence_lengths,
     )
 
@@ -329,7 +326,7 @@ def generate(lm_backbone, queries, tokenizer, generation_config):
         # position_ids=attention_mask.cumsum(1) - attention_mask.long(), # generation collapsed if this was turned on. TODO: why does generation collapse with this?
         generation_config=generation_config,
         return_dict_in_generate=True,
-        output_scores=True
+        output_scores=True,
     )
     logits = torch.stack(output.scores, 1)
     return torch.cat((queries, output.sequences[:, context_length:]), dim=1), logits
@@ -457,7 +454,10 @@ if __name__ == "__main__":
                 save_code=True,
             )
             file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
-            wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
+            wandb.run.log_code(
+                ".",
+                include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]),
+            )
         writer = SummaryWriter(f"runs/{args.run_name}")
         writer.add_text(
             "hyperparameters",
@@ -561,7 +561,11 @@ if __name__ == "__main__":
     global_step = 0
     start_time = time.time()
     eval_split = list(eval_dataloaders.keys())[0]
-    stats_shape = (args.ppo.noptepochs, args.nminibatches, args.gradient_accumulation_steps)
+    stats_shape = (
+        args.ppo.noptepochs,
+        args.nminibatches,
+        args.gradient_accumulation_steps,
+    )
     approxkl_stats = torch.zeros(stats_shape, device=device)
     pg_clipfrac_stats = torch.zeros(stats_shape, device=device)
     pg_loss_stats = torch.zeros(stats_shape, device=device)
@@ -590,7 +594,10 @@ if __name__ == "__main__":
                     eval_ds = Dataset.from_pandas(eval_df)
                     eval_ds.save_to_disk(f"runs/{args.run_name}/{eval_split}_dataset_{global_step}")
                     if args.track:
-                        wandb.log({f"samples/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
+                        wandb.log(
+                            {f"samples/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)},
+                            step=update,
+                        )
             del eval_storage, eval_df
             torch.cuda.empty_cache()
 
@@ -635,10 +642,18 @@ if __name__ == "__main__":
                 postprocessed_query_response = torch.cat((query, postprocessed_response), 1)
                 sequence_length = first_true_indices(postprocessed_response == tokenizer.pad_token_id) - 1
                 full_value, _, _ = get_reward(
-                    accelerator.unwrap_model(model).critic, query_response, tokenizer, context_length
+                    accelerator.unwrap_model(model).critic,
+                    query_response,
+                    tokenizer,
+                    context_length,
                 )
                 value = full_value[:, context_length - 1 : -1].squeeze(-1)
-                _, score, _ = get_reward(reward_model, postprocessed_query_response, tokenizer, context_length)
+                _, score, _ = get_reward(
+                    reward_model,
+                    postprocessed_query_response,
+                    tokenizer,
+                    context_length,
+                )
 
                 query_responses.append(query_response)
                 responses.append(response)
@@ -664,7 +679,11 @@ if __name__ == "__main__":
             # only query humans on responses that pass that filter
             contain_eos_token = torch.any(postprocessed_responses == tokenizer.eos_token_id, dim=-1)
             if args.non_eos_penalty:
-                scores = torch.where(contain_eos_token, scores, torch.full_like(scores, args.penalty_reward_value))
+                scores = torch.where(
+                    contain_eos_token,
+                    scores,
+                    torch.full_like(scores, args.penalty_reward_value),
+                )
             accelerator.print(f"{scores=}, {(contain_eos_token.sum() / len(contain_eos_token))=}")
 
             # be very careful with `padding_mask_p1`; see https://excalidraw.com/#json=LWnzG4w2k5DjF_EOL_xPt,e2w3a-hFJ_gX5vOfeyXGTw
@@ -681,7 +700,11 @@ if __name__ == "__main__":
             non_score_reward = -args.ppo.kl_coef * kl
             rewards = non_score_reward.clone()
             actual_start = torch.arange(rewards.size(0), device=rewards.device)
-            actual_end = torch.where(sequence_lengths_p1 < rewards.size(1), sequence_lengths_p1, sequence_lengths)
+            actual_end = torch.where(
+                sequence_lengths_p1 < rewards.size(1),
+                sequence_lengths_p1,
+                sequence_lengths,
+            )
             rewards[[actual_start, actual_end]] += scores
 
             # 5. whiten rewards
@@ -733,7 +756,11 @@ if __name__ == "__main__":
                         logits /= args.temperature + 1e-7
                         new_all_logprobs = F.log_softmax(logits, dim=-1)
                         new_logprobs = torch.gather(new_all_logprobs, 2, mb_responses.unsqueeze(-1)).squeeze(-1)
-                        new_logprobs = torch.masked_fill(new_logprobs, padding_mask[micro_batch_inds], INVALID_LOGPROB)
+                        new_logprobs = torch.masked_fill(
+                            new_logprobs,
+                            padding_mask[micro_batch_inds],
+                            INVALID_LOGPROB,
+                        )
                         vpred = vpred_temp[:, context_length - 1 : -1].squeeze(-1)
                         vpred = torch.masked_fill(vpred, padding_mask_p1[micro_batch_inds], 0)
                         vpredclipped = torch.clamp(
@@ -745,14 +772,20 @@ if __name__ == "__main__":
                         vf_losses2 = torch.square(vpredclipped - mb_return)
                         vf_loss_max = torch.max(vf_losses1, vf_losses2)
                         vf_loss = 0.5 * masked_mean(vf_loss_max, ~padding_mask_p1[micro_batch_inds])
-                        vf_clipfrac = masked_mean((vf_losses2 > vf_losses1).float(), ~padding_mask_p1[micro_batch_inds])
+                        vf_clipfrac = masked_mean(
+                            (vf_losses2 > vf_losses1).float(),
+                            ~padding_mask_p1[micro_batch_inds],
+                        )
                         logprobs_diff = new_logprobs - mb_logprobs
                         ratio = torch.exp(logprobs_diff)
                         pg_losses = -mb_advantage * ratio
                         pg_losses2 = -mb_advantage * torch.clamp(ratio, 1.0 - args.ppo.cliprange, 1.0 + args.ppo.cliprange)
                         pg_loss_max = torch.max(pg_losses, pg_losses2)
                         pg_loss = masked_mean(pg_loss_max, ~padding_mask[micro_batch_inds])
-                        pg_clipfrac = masked_mean((pg_losses2 > pg_losses).float(), ~padding_mask[micro_batch_inds])
+                        pg_clipfrac = masked_mean(
+                            (pg_losses2 > pg_losses).float(),
+                            ~padding_mask[micro_batch_inds],
+                        )
                         loss = pg_loss + args.ppo.vf_coef * vf_loss
                         accelerator.backward(loss)
                         optimizer.step()
@@ -799,22 +832,72 @@ if __name__ == "__main__":
             mean_entropy = (-logprobs).sum(1).mean()
             mean_non_score_reward = non_score_reward.sum(1).mean()
             writer.add_scalar("objective/kl", accelerator.gather(mean_kl).mean().item(), update)
-            writer.add_scalar("objective/entropy", accelerator.gather(mean_entropy).mean().item(), update)
-            writer.add_scalar("objective/non_score_reward", accelerator.gather(mean_non_score_reward).mean().item(), update)
             writer.add_scalar(
-                "objective/score_total", accelerator.gather(mean_non_score_reward + scores.mean()).mean().item(), update
+                "objective/entropy",
+                accelerator.gather(mean_entropy).mean().item(),
+                update,
             )
-            writer.add_scalar("objective/scores", accelerator.gather(scores.mean()).mean().item(), update)
-            writer.add_scalar("objective/validation_score", accelerator.gather(validation_score.mean()).mean().item(), update)
-            writer.add_scalar("ppo/policy/approxkl_avg", accelerator.gather(approxkl_stats).mean().item(), update)
-            writer.add_scalar("ppo/policy/clipfrac_avg", accelerator.gather(pg_clipfrac_stats).mean().item(), update)
-            writer.add_scalar("ppo/loss/policy_avg", accelerator.gather(pg_loss_stats).mean().item(), update)
-            writer.add_scalar("ppo/loss/value_avg", accelerator.gather(vf_loss_stats).mean().item(), update)
-            writer.add_scalar("ppo/val/clipfrac_avg", accelerator.gather(vf_clipfrac_stats).mean().item(), update)
-            writer.add_scalar("ppo/policy/entropy_avg", accelerator.gather(entropy_stats).mean().item(), update)
+            writer.add_scalar(
+                "objective/non_score_reward",
+                accelerator.gather(mean_non_score_reward).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "objective/score_total",
+                accelerator.gather(mean_non_score_reward + scores.mean()).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "objective/scores",
+                accelerator.gather(scores.mean()).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "objective/validation_score",
+                accelerator.gather(validation_score.mean()).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/policy/approxkl_avg",
+                accelerator.gather(approxkl_stats).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/policy/clipfrac_avg",
+                accelerator.gather(pg_clipfrac_stats).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/loss/policy_avg",
+                accelerator.gather(pg_loss_stats).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/loss/value_avg",
+                accelerator.gather(vf_loss_stats).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/val/clipfrac_avg",
+                accelerator.gather(vf_clipfrac_stats).mean().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/policy/entropy_avg",
+                accelerator.gather(entropy_stats).mean().item(),
+                update,
+            )
             writer.add_scalar("ppo/val/ratio", accelerator.gather(ratio_stats).mean().item(), update)
-            writer.add_scalar("ppo/val/ratio_var", accelerator.gather(ratio_stats).var().item(), update)
-            writer.add_scalar("ppo/val/num_eos_tokens", (responses == tokenizer.eos_token_id).sum().item(), update)
+            writer.add_scalar(
+                "ppo/val/ratio_var",
+                accelerator.gather(ratio_stats).var().item(),
+                update,
+            )
+            writer.add_scalar(
+                "ppo/val/num_eos_tokens",
+                (responses == tokenizer.eos_token_id).sum().item(),
+                update,
+            )
             writer.add_scalar("ppo/lr", lrnow, update)
             writer.add_scalar("ppo/episode", global_step, update)
             eps = int(global_step / (time.time() - start_time))
@@ -837,7 +920,10 @@ if __name__ == "__main__":
                 eval_ds = Dataset.from_pandas(eval_df)
                 eval_ds.save_to_disk(f"runs/{args.run_name}/{eval_split}_dataset")
                 if args.track:
-                    wandb.log({f"eval/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
+                    wandb.log(
+                        {f"eval/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)},
+                        step=update,
+                    )
 
     # save model
     if args.output_dir and args.num_train_epochs > 0:
@@ -857,5 +943,9 @@ if __name__ == "__main__":
                 safe_serialization=False,
             )
             if args.push_to_hub:
-                unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
+                unwrapped.push_to_hub(
+                    repo_id=args.hf_repo_id,
+                    revision=args.hf_repo_revision,
+                    safe_serialization=False,
+                )
                 accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")
