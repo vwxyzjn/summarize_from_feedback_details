@@ -7,6 +7,7 @@ NOW := $(shell date +%s)
 
 GITHUB_REPO := git@github.com:vwxyzjn/summarize_from_feedback_details.git
 REPO_NAME := summarize_from_feedback_details
+DONT_CLONE_FOLDER := eval 
 WANDB_API_KEY_FILE := /home/toolkit/wandb_api_key
 
 IMAGE := registry.console.elementai.com/snow.interactive_toolkit/default
@@ -32,7 +33,7 @@ WANDB_API_KEY := $(shell cat ${WANDB_API_KEY_FILE})
 
 # a function to create a git snapshot based on the active commit
 # usage: $(call create_snapshot)
-# don't clone the "eval" folder
+# don't clone the "DONT_CLONE_FOLDER" folder
 define create_snapshot
 	@( [ -d $(_WORKDIR) ] && \
 	cd $(_WORKDIR) && \
@@ -44,8 +45,8 @@ define create_snapshot
 	rm -rf $(_WORKDIR) && \
 	git clone --filter=blob:none --no-checkout $(GITHUB_REPO) $(_WORKDIR) && \
 	cd $(_WORKDIR) && \
-	git sparse-checkout init --cone && \
-	git sparse-checkout set ':(exclude)eval' && \
+	git sparse-checkout init && \
+	git sparse-checkout set --no-cone '/*' '!$(DONT_CLONE_FOLDER)' && \
 	git checkout $(REVISION) && \
 	pwd && \
 	echo "snapshot created successfully")
