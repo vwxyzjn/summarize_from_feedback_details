@@ -61,8 +61,6 @@ srun poetry run accelerate launch --config_file deepspeed.yaml \
     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
     --gradient_accumulation_steps=$gradient_accumulation_steps \
     --local_micro_batch_size=$local_micro_batch_size \
-    --ppo.no_whiten_rewards \
-    --exp_name ppo \
     --base_model=$MODEL \
     --sft_model_path=$SFT_MODEL_PATH \
     --reward_model_path=$REWARD_MODEL_PATH \
