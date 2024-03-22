@@ -1,9 +1,10 @@
 import os
 import random
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from types import SimpleNamespace
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -14,12 +15,11 @@ import torch.optim as optim
 import tyro
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
-from accelerate.utils import gather_object, broadcast
-from datasets import load_dataset
+from accelerate.utils import broadcast, gather_object
+from datasets import Dataset, load_dataset
+from huggingface_hub import HfApi
 from rich.console import Console
 from rich.pretty import pprint
-from rich.table import Table
-from torch import optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -32,24 +32,10 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
 )
-from huggingface_hub import HfApi
 
+torch.set_printoptions(precision=4, sci_mode=False)
 api = HfApi()
 INVALID_LOGPROB = 1.0
-
-
-@dataclass
-class AdaptiveKLParams:
-    target: float = 6.0
-    horizon: int = 10000  # in episodes
-
-
-@dataclass
-class RewardHParams:
-    use_adaptive_kl: bool = False
-    adaptive_kl: Optional[AdaptiveKLParams] = field(default_factory=AdaptiveKLParams)
-    dataset_std: float = 1.0
-    kl_coef: float = 0.05
 
 
 @dataclass
@@ -61,7 +47,8 @@ class PpoHParams:
     cliprange_value: float = 0.2
     gamma: float = 1
     lam: float = 0.95
-    whiten_rewards: bool = True
+    whiten_rewards: bool = False
+    kl_coef: float = 0.05
 
 
 @dataclass
@@ -169,7 +156,6 @@ class Args:
     """the url of the saved model in the Hugging Face Hub (will be autoset)"""
     output_dir: str = "models/ppo_model"
     """Where to save the model"""
-    reward: RewardHParams = field(default_factory=RewardHParams)
     ppo: PpoHParams = field(default_factory=PpoHParams)
 
 
@@ -212,27 +198,43 @@ def disable_dropout(model: torch.nn.Module):
         if isinstance(module, torch.nn.Dropout):
             module.p = 0
 
+
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.normal_(layer.weight, std=std)
     torch.nn.init.constant_(layer.bias, val=bias_const)
     return layer
 
 
-class AdaptiveKLController:
-    def __init__(self, init_kl_coef: float, hparams: AdaptiveKLParams):
-        self.value = init_kl_coef
-        self.hparams = hparams
-
-    def update(self, current, n_steps):
-        target = self.hparams.target
-        proportional_error = np.clip(current / target - 1, -0.2, 0.2)
-        mult = 1 + proportional_error * n_steps / self.hparams.horizon
-        self.value *= mult
+def masked_mean(values, mask, axis=None):
+    """Compute mean of tensor with a masked values."""
+    if axis is not None:
+        return (values * mask).sum(axis=axis) / mask.sum(axis=axis)
+    else:
+        return (values * mask).sum() / mask.sum()
 
 
-def whiten(values, shift_mean=True):
-    # `unbiased=False` matches TF `tf.nn.moments`'s setting
-    mean, var = torch.mean(values), torch.var(values, unbiased=False)
+def masked_var(values, mask, unbiased=True):
+    """Compute variance of tensor with masked values."""
+    mean = masked_mean(values, mask)
+    centered_values = values - mean
+    variance = masked_mean(centered_values**2, mask)
+    if unbiased:
+        mask_sum = mask.sum()
+        if mask_sum == 0:
+            raise ValueError(
+                "The sum of the mask is zero, which can happen when `mini_batch_size=1`;"
+                "try increase the `mini_batch_size` or `gradient_accumulation_steps`"
+            )
+        # note that if mask_sum == 1, then there is a division by zero issue
+        # to avoid it you just need to use a larger minibatch_size
+        bessel_correction = mask_sum / (mask_sum - 1)
+        variance = variance * bessel_correction
+    return variance
+
+
+def masked_whiten(values, mask, shift_mean=True):
+    """Whiten values with masked values."""
+    mean, var = masked_mean(values, mask), masked_var(values, mask, False)
     whitened = (values - mean) * torch.rsqrt(var + 1e-8)
     if not shift_mean:
         whitened += mean
@@ -366,21 +368,8 @@ def forward(model, query_responses, tokenizer):
     )
 
 
-@dataclass
-class EvalStorage:
-    query_token: List[str] = field(default_factory=list)
-    postprocessed_response_token: List[str] = field(default_factory=list)
-    reference_response_token: List[str] = field(default_factory=list)
-    score: List[float] = field(default_factory=list)
-    reference_score: List[float] = field(default_factory=list)
-
-    query: List[str] = field(default_factory=list)
-    postprocessed_response: List[str] = field(default_factory=list)
-    reference_response: List[str] = field(default_factory=list)
-
-
-def evaluate(args: Args, reward_model, policy, tokenizer, dataloader, generation_config, sampling=True):
-    eval_storage = EvalStorage()
+def evaluate(reward_model, policy, tokenizer, dataloader, generation_config, sampling=True):
+    eval_storage = defaultdict(list)
     with torch.no_grad():
         for data in tqdm(dataloader):
             queries = data["query_token"]
@@ -400,26 +389,26 @@ def evaluate(args: Args, reward_model, policy, tokenizer, dataloader, generation
             postprocessed_query_responses = torch.cat((queries, postprocessed_responses), 1)
             _, score, _ = get_reward(reward_model, postprocessed_query_responses, tokenizer, queries.shape[1])
 
-            eval_storage.query_token.extend(queries)
-            eval_storage.reference_response_token.extend(reference_response_token)
-            eval_storage.reference_score.append(reference_score)
-            eval_storage.postprocessed_response_token.extend(postprocessed_responses)
-            eval_storage.score.append(score)
+            eval_storage["query_token"].extend(queries)
+            eval_storage["reference_response_token"].extend(reference_response_token)
+            eval_storage["reference_score"].append(reference_score)
+            eval_storage["postprocessed_response_token"].extend(postprocessed_responses)
+            eval_storage["score"].append(score)
             if sampling:
                 break
 
-    eval_storage.query = tokenizer.batch_decode(eval_storage.query_token, skip_special_tokens=True)
-    eval_storage.reference_response = tokenizer.batch_decode(eval_storage.reference_response_token)
-    eval_storage.postprocessed_response = tokenizer.batch_decode(
-        eval_storage.postprocessed_response_token, skip_special_tokens=True
+    eval_storage["query"] = tokenizer.batch_decode(eval_storage["query_token"], skip_special_tokens=True)
+    eval_storage["reference_response"] = tokenizer.batch_decode(eval_storage["reference_response_token"])
+    eval_storage["postprocessed_response"] = tokenizer.batch_decode(
+        eval_storage["postprocessed_response_token"], skip_special_tokens=True
     )
-    eval_score = torch.cat(eval_storage.score).float().cpu().numpy().tolist()
-    eval_reference_score = torch.cat(eval_storage.reference_score).float().cpu().numpy().tolist()
+    eval_score = torch.cat(eval_storage["score"]).float().cpu().numpy().tolist()
+    eval_reference_score = torch.cat(eval_storage["reference_score"]).float().cpu().numpy().tolist()
     eval_df = pd.DataFrame(
         {
-            "query": gather_object(eval_storage.query),
-            "postprocessed_response": gather_object(eval_storage.postprocessed_response),
-            "reference_responses": gather_object(eval_storage.reference_response),
+            "query": gather_object(eval_storage["query"]),
+            "postprocessed_response": gather_object(eval_storage["postprocessed_response"]),
+            "reference_responses": gather_object(eval_storage["reference_response"]),
             "scores": gather_object(eval_score),
             "reference_scores": gather_object(eval_reference_score),
         }
@@ -550,7 +539,6 @@ if __name__ == "__main__":
         ref_policy = ref_policy.to(device)
         reward_model = reward_model.to(device)
 
-    kl_ctl = AdaptiveKLController(args.reward.kl_coef, hparams=args.reward.adaptive_kl)
     generation_config = GenerationConfig(
         max_new_tokens=args.response_length,
         min_new_tokens=args.response_length,
@@ -590,17 +578,17 @@ if __name__ == "__main__":
         data = next(iter_dataloader)
         with torch.no_grad():
             eval_storage, eval_df = evaluate(
-                args,
                 reward_model,
                 accelerator.unwrap_model(model).policy,
                 tokenizer,
                 eval_dataloaders[eval_split],
                 validation_generation_config,
             )
-            validation_score = eval_storage.score[0]
+            validation_score = eval_storage["score"][0]
             if args.print_sample_output_freq > 0 and (update - 1) % args.print_sample_output_freq == 0:
                 if accelerator.is_main_process:
-                    eval_df.to_csv(f"runs/{args.run_name}/{eval_split}_table_{global_step}.csv")
+                    eval_ds = Dataset.from_pandas(eval_df)
+                    eval_ds.save_to_disk(f"runs/{args.run_name}/{eval_split}_dataset_{global_step}")
                     if args.track:
                         wandb.log({f"samples/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
             del eval_storage, eval_df
@@ -627,9 +615,6 @@ if __name__ == "__main__":
                 response = query_response[:, context_length:]
 
                 # use the logits during generation directly, instead of using the following
-                # output = forward(accelerator.unwrap_model(model).policy, query_response, tokenizer)
-                # logits = output.logits[:, context_length - 1 : -1]
-                # logits /= args.temperature + 1e-7
                 all_logprob = F.log_softmax(logits, dim=-1)
                 logprob = torch.gather(all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
                 del logits, all_logprob
@@ -682,22 +667,32 @@ if __name__ == "__main__":
                 scores = torch.where(contain_eos_token, scores, torch.full_like(scores, args.penalty_reward_value))
             accelerator.print(f"{scores=}, {(contain_eos_token.sum() / len(contain_eos_token))=}")
 
+            # be very careful with `padding_mask_p1`; see https://excalidraw.com/#json=LWnzG4w2k5DjF_EOL_xPt,e2w3a-hFJ_gX5vOfeyXGTw
+            sequence_lengths_p1 = sequence_lengths + 1
+            response_idxs = torch.arange(responses.shape[1], device=responses.device).repeat(responses.shape[0], 1)
+            padding_mask = response_idxs > sequence_lengths.unsqueeze(1)
+            padding_mask_p1 = response_idxs > (sequence_lengths_p1.unsqueeze(1))
+            logprobs = torch.masked_fill(logprobs, padding_mask, INVALID_LOGPROB)
+            ref_logprobs = torch.masked_fill(ref_logprobs, padding_mask, INVALID_LOGPROB)
+            values = torch.masked_fill(values, padding_mask_p1, 0)
+
             # 4. compute rewards
             kl = logprobs - ref_logprobs
-            non_score_reward = -kl_ctl.value * kl
+            non_score_reward = -args.ppo.kl_coef * kl
             rewards = non_score_reward.clone()
             actual_start = torch.arange(rewards.size(0), device=rewards.device)
-            actual_end = sequence_lengths
+            actual_end = torch.where(sequence_lengths_p1 < rewards.size(1), sequence_lengths_p1, sequence_lengths)
             rewards[[actual_start, actual_end]] += scores
 
             # 5. whiten rewards
             if args.ppo.whiten_rewards:
-                rewards = whiten(rewards, shift_mean=False)
+                rewards = masked_whiten(rewards, mask=~padding_mask_p1, shift_mean=False)
+                rewards = torch.masked_fill(rewards, padding_mask_p1, 0)
 
             # 6. compute advantages and returns
             lastgaelam = 0
             advantages_reversed = []
-            gen_length = args.response_length
+            gen_length = responses.shape[1]
             for t in reversed(range(gen_length)):
                 nextvalues = values[:, t + 1] if t < gen_length - 1 else 0.0
                 delta = rewards[:, t] + args.ppo.gamma * nextvalues - values[:, t]
@@ -705,7 +700,8 @@ if __name__ == "__main__":
                 advantages_reversed.append(lastgaelam)
             advantages = torch.stack(advantages_reversed[::-1], axis=1)
             returns = advantages + values
-            advantages = whiten(advantages)
+            advantages = masked_whiten(advantages, ~padding_mask)
+            advantages = torch.masked_fill(advantages, padding_mask, 0)
             return_mean, return_var = returns.mean(), returns.var()
             value_mean, value_var = values.mean(), values.var()
             accelerator.print("rewards====", rewards[0])
@@ -737,7 +733,9 @@ if __name__ == "__main__":
                         logits /= args.temperature + 1e-7
                         new_all_logprobs = F.log_softmax(logits, dim=-1)
                         new_logprobs = torch.gather(new_all_logprobs, 2, mb_responses.unsqueeze(-1)).squeeze(-1)
+                        new_logprobs = torch.masked_fill(new_logprobs, padding_mask[micro_batch_inds], INVALID_LOGPROB)
                         vpred = vpred_temp[:, context_length - 1 : -1].squeeze(-1)
+                        vpred = torch.masked_fill(vpred, padding_mask_p1[micro_batch_inds], 0)
                         vpredclipped = torch.clamp(
                             vpred,
                             mb_values - args.ppo.cliprange_value,
@@ -745,13 +743,16 @@ if __name__ == "__main__":
                         )
                         vf_losses1 = torch.square(vpred - mb_return)
                         vf_losses2 = torch.square(vpredclipped - mb_return)
-                        vf_loss = 0.5 * torch.max(vf_losses1, vf_losses2).mean()
-                        vf_clipfrac = (vf_losses2 > vf_losses1).float().mean()
+                        vf_loss_max = torch.max(vf_losses1, vf_losses2)
+                        vf_loss = 0.5 * masked_mean(vf_loss_max, ~padding_mask_p1[micro_batch_inds])
+                        vf_clipfrac = masked_mean((vf_losses2 > vf_losses1).float(), ~padding_mask_p1[micro_batch_inds])
                         logprobs_diff = new_logprobs - mb_logprobs
                         ratio = torch.exp(logprobs_diff)
                         pg_losses = -mb_advantage * ratio
                         pg_losses2 = -mb_advantage * torch.clamp(ratio, 1.0 - args.ppo.cliprange, 1.0 + args.ppo.cliprange)
-                        pg_loss = torch.max(pg_losses, pg_losses2).mean()
+                        pg_loss_max = torch.max(pg_losses, pg_losses2)
+                        pg_loss = masked_mean(pg_loss_max, ~padding_mask[micro_batch_inds])
+                        pg_clipfrac = masked_mean((pg_losses2 > pg_losses).float(), ~padding_mask[micro_batch_inds])
                         loss = pg_loss + args.ppo.vf_coef * vf_loss
                         accelerator.backward(loss)
                         optimizer.step()
@@ -771,39 +772,18 @@ if __name__ == "__main__":
                     gradient_accumulation_idx += 1
                 minibatch_idx += 1
                 # del everything and empty cache
+                # fmt: off
                 del (
-                    output,
-                    vpred_temp,
-                    logits,
-                    new_all_logprobs,
-                    new_logprobs,
-                    vpred,
-                    vpredclipped,
-                    vf_losses1,
-                    vf_losses2,
-                    vf_loss,
-                    vf_clipfrac,
-                    logprobs_diff,
-                    ratio,
-                    pg_losses,
-                    pg_losses2,
-                    pg_loss,
-                    loss,
-                    pg_clipfrac,
-                    prob_dist,
-                    entropy,
-                    approxkl,
-                    mb_return,
-                    mb_advantage,
-                    mb_values,
-                    mb_responses,
-                    mb_query_responses,
-                    mb_logprobs,
+                    output, vpred_temp, logits, new_all_logprobs, new_logprobs, vpred, vpredclipped,
+                    vf_losses1, vf_losses2, vf_loss, vf_clipfrac, logprobs_diff, ratio, pg_losses, pg_losses2,
+                    pg_loss, loss, pg_clipfrac, prob_dist, entropy, approxkl, mb_return,
+                    mb_advantage, mb_values, mb_responses, mb_query_responses, mb_logprobs,
                 )
+                # fmt: on
                 torch.cuda.empty_cache()
             if accelerator.is_main_process:
                 console.print(
-                    f"ppo_epoch_idx",
+                    "ppo_epoch_idx",
                     ppo_epoch_idx,
                     "approxkl",
                     approxkl_stats[: ppo_epoch_idx + 1].mean().item(),
@@ -818,7 +798,6 @@ if __name__ == "__main__":
             mean_kl = kl.sum(1).mean()
             mean_entropy = (-logprobs).sum(1).mean()
             mean_non_score_reward = non_score_reward.sum(1).mean()
-            writer.add_scalar("objective/kl_coef", kl_ctl.value, update)
             writer.add_scalar("objective/kl", accelerator.gather(mean_kl).mean().item(), update)
             writer.add_scalar("objective/entropy", accelerator.gather(mean_entropy).mean().item(), update)
             writer.add_scalar("objective/non_score_reward", accelerator.gather(mean_non_score_reward).mean().item(), update)
@@ -827,21 +806,6 @@ if __name__ == "__main__":
             )
             writer.add_scalar("objective/scores", accelerator.gather(scores.mean()).mean().item(), update)
             writer.add_scalar("objective/validation_score", accelerator.gather(validation_score.mean()).mean().item(), update)
-            # writer.add_scalar("ppo/loss/policy", accelerator.gather(pg_loss).mean().item(), update)
-            # writer.add_scalar("ppo/loss/value", accelerator.gather(vf_loss).mean().item(), update)
-            # writer.add_scalar("ppo/loss/total", accelerator.gather(loss).mean().item(), update)
-            # writer.add_scalar("ppo/policy/entropy", accelerator.gather(entropy.mean()).mean().item(), update)
-            # writer.add_scalar("ppo/policy/approxkl", accelerator.gather(approxkl).mean().item(), update)
-            # writer.add_scalar("ppo/policy/clipfrac", accelerator.gather(pg_clipfrac).mean().item(), update)
-            # writer.add_scalar("ppo/returns/mean", accelerator.gather(return_mean).mean().item(), update)
-            # writer.add_scalar("ppo/returns/var", accelerator.gather(return_var).mean().item(), update)
-            # writer.add_scalar("ppo/val/vpred", accelerator.gather(vpred.mean()).mean().item(), update)
-            # writer.add_scalar("ppo/val/error", accelerator.gather(vf_losses1.mean()).mean().item(), update)
-            # writer.add_scalar("ppo/val/clipfrac", accelerator.gather(vf_clipfrac).mean().item(), update)
-            # writer.add_scalar("ppo/val/mean", accelerator.gather(value_mean).mean().item(), update)
-            # writer.add_scalar("ppo/val/var", accelerator.gather(value_var).mean().item(), update)
-            # writer.add_scalar("ppo/val/advantage", accelerator.gather(advantages.mean()).mean().item(), update)
-            # writer.add_scalar("ppo/val/advantage_var", accelerator.gather(advantages.mean()).var().item(), update)
             writer.add_scalar("ppo/policy/approxkl_avg", accelerator.gather(approxkl_stats).mean().item(), update)
             writer.add_scalar("ppo/policy/clipfrac_avg", accelerator.gather(pg_clipfrac_stats).mean().item(), update)
             writer.add_scalar("ppo/loss/policy_avg", accelerator.gather(pg_loss_stats).mean().item(), update)
@@ -856,15 +820,12 @@ if __name__ == "__main__":
             eps = int(global_step / (time.time() - start_time))
             writer.add_scalar("ppo/eps", eps, update)
             accelerator.print("ppo/eps", eps, update)
-            if args.reward.use_adaptive_kl:
-                kl_ctl.update(mean_kl.item(), args.batch_size)
         del kl, mean_kl, mean_entropy, mean_non_score_reward, scores
         torch.cuda.empty_cache()
 
     if args.run_eval:
         for eval_split in eval_dataloaders:
             eval_storage, eval_df = evaluate(
-                args,
                 reward_model,
                 accelerator.unwrap_model(model).policy,
                 tokenizer,
@@ -873,7 +834,8 @@ if __name__ == "__main__":
                 sampling=False,
             )
             if accelerator.is_main_process:
-                eval_df.to_csv(f"runs/{args.run_name}/{eval_split}_table.csv")
+                eval_ds = Dataset.from_pandas(eval_df)
+                eval_ds.save_to_disk(f"runs/{args.run_name}/{eval_split}_dataset")
                 if args.track:
                     wandb.log({f"eval/{eval_split}_query_responses": wandb.Table(dataframe=eval_df)}, step=update)
 
@@ -897,4 +859,3 @@ if __name__ == "__main__":
             if args.push_to_hub:
                 unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
                 accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")
-

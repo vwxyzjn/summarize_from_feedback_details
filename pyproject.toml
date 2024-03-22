@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "summarize-from-feedback-details"
-version = "0.1.0"
+version = "0.2.0"
 description = ""
 authors = ["Costa Huang <costa.huang@outlook.com>"]
 readme = "README.md"

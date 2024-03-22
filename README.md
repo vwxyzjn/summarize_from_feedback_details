@@ -31,7 +31,7 @@ python visualize_tokens.py
 
 
 
-To run a hello world example, you can run the `hello_world.sh` script. For the full-scaling laws experiment, you can run 
+To run a hello world example, you can run the `hello_world.sh` script. For the full scaling behaviors experiment, you can run 
 
 ```
 mkdir -p slurm/logs
@@ -40,7 +40,13 @@ rm_job_id=$(sbatch --parsable --dependency=afterany:$sft_job_id sbatches/reward.
 ppo_job_id=$(sbatch --parsable --dependency=afterany:$rm_job_id sbatches/ppo_left_padding.sbatch)
 ```
 
-The command above runs end-to-end RLHF experiments with 4 random seeds. We then run `eval/sft_rm_scale.py` and `eval/rlhf_scaling_plot.py` which fetch experiments and produce the following results.
+The command above runs end-to-end RLHF experiments with 4 random seeds. We then run the following scripts to fetch experiments and generate plots
+
+```
+cd eval
+python sft_rm_scale.py
+python rlhf_scaling_plot.py
+```
 
 | Rouge Score (sft.py) | Reward Model (reward.py) | 
 | --- | --- | 
@@ -53,9 +59,8 @@ The command above runs end-to-end RLHF experiments with 4 random seeds. We then 
 
 
 We use our pre-built TL;DR datasets:
-
-* SFT dataset: [cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162](https://huggingface.co/datasets/cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162)
-* Preference dataset: [cleanrl/summarize_from_feedback_oai_preprocessing_1704563162](https://huggingface.co/datasets/cleanrl/summarize_from_feedback_oai_preprocessing_1704563162)
+* SFT dataset: [vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144](https://huggingface.co/datasets/vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144)
+* Preference dataset: [vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144](https://huggingface.co/datasets/vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144)
 
 You can optionally build them yourself with
 

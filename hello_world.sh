@@ -23,7 +23,6 @@ local_eval_batch_size=1 # smaller fits better on GPU
 
 poetry run accelerate launch --config_file deepspeed.yaml \
     summarize_from_feedback_details/sft.py \
-    --task.query_dataset=cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162 \
     --base_model=$MODEL \
     --lr=$LR \
     --deepspeed \
@@ -35,8 +34,8 @@ poetry run accelerate launch --config_file deepspeed.yaml \
  
 poetry run accelerate launch --config_file deepspeed.yaml \
     summarize_from_feedback_details/reward.py \
-    --label_dataset=cleanrl/summarize_from_feedback_oai_preprocessing_1704563162 \
-    --base_model=$SFT_MODEL_PATH \
+    --base_model=$MODEL \
+    --sft_model_path=$SFT_MODEL_PATH \
     --lr=$LR \
     --deepspeed \
     --run_eval \
@@ -46,10 +45,8 @@ poetry run accelerate launch --config_file deepspeed.yaml \
     --local_eval_batch_size=$local_eval_batch_size \
     --seed=$SEED
 
-# proper left padding
 poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/ppo_left_padding.py \
-    --task.query_dataset=cleanrl/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1704563162 \
+    summarize_from_feedback_details/ppo.py \
     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
     --gradient_accumulation_steps=$gradient_accumulation_steps \
     --local_micro_batch_size=$local_micro_batch_size \
@@ -59,9 +56,7 @@ poetry run accelerate launch --config_file deepspeed.yaml \
     --lr=$LR \
     --deepspeed \
     --run_eval \
-    --push_to_hub \
     --track \
     --output_dir=$POLICY_MODEL_PATH \
+    --push_to_hub \
     --seed=$SEED
-
- 
