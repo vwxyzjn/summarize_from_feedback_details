@@ -2,7 +2,7 @@ import os
 import random
 import time
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import Literal, Optional
 
@@ -144,6 +144,7 @@ class Args:
             bias="none",
             task_type="CAUSAL_LM",
             lora_dropout=0.0,
+            target_modules="all-linear",
         ),
     )
 
@@ -537,26 +538,33 @@ if __name__ == "__main__":
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
     model_config = AutoConfig.from_pretrained(args.base_model)
-    scalar_model_config = ScalarModelConfig(
-        base_model=args.base_model,
-        base_config=model_config,
-        hidden_size=model_config.hidden_size,
+    scalar_model_config = ScalarModelConfig.from_pretrained(
+        args.reward_model_path,
+        revision=args.reward_model_revision,
     )
-    if not args.reward_model_path:
-        base_critic: PreTrainedModel = ScalarModel(scalar_model_config)
-        reward_model: PreTrainedModel = ScalarModel(scalar_model_config)
-    else:
-        base_critic: PreTrainedModel = ScalarModel.from_pretrained(
-            args.reward_model_path,
-            revision=args.reward_model_revision,
-            trust_remote_code=True,
-        )
-        reward_model: PreTrainedModel = ScalarModel.from_pretrained(
-            args.reward_model_path,
-            revision=args.reward_model_revision,
-            trust_remote_code=True,
-        )
-    critic = get_peft_model(base_critic, args.lora_config)
+    # hack to remove the path
+    # models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
+    if scalar_model_config.base_model.startswith("models/"):
+        _, _, original_model, sft_revision = scalar_model_config.base_config[
+            "_name_or_path"
+        ].split("/")
+        sft_model = f"vwxyzjn/EleutherAI_{original_model}__sft__tldr"
+        scalar_model_config.base_config["_name_or_path"] = sft_model
+        scalar_model_config.base_model = sft_model
+        scalar_model_config.base_model_revision = sft_revision
+
+    base_critic: PreTrainedModel = ScalarModel.from_pretrained(
+        args.reward_model_path,
+        revision=args.reward_model_revision,
+        config=scalar_model_config,
+    )
+    reward_model: PreTrainedModel = ScalarModel.from_pretrained(
+        args.reward_model_path,
+        revision=args.reward_model_revision,
+        config=scalar_model_config,
+    )
+    critic_lora_config = replace(args.lora_config, task_type="FEATURE_EXTRACTION")
+    critic = get_peft_model(base_critic, critic_lora_config)
 
     base_policy = AutoModelForCausalLM.from_pretrained(
         args.sft_model_path,
