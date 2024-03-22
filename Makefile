@@ -17,7 +17,7 @@ CPU_MEM ?= 64
 GPU ?= 1
 GPU_MEM ?= 80
 # Another option "Tesla T4". You will need `GPU=4` to use that. 
-GPU_TYPE ?= "A100"
+# GPU_TYPE ?= "A100"
 MAX_RUN_TIME ?= 7200
 
 # Accelerate settings

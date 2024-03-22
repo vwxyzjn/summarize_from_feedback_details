@@ -10,17 +10,28 @@ REWARD_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr
 REWARD_MODEL_REVISION=reward__${SEED}__1708628552
 SFT_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__sft__tldr
 SFT_MODEL_REVISION=sft__${SEED}__1708611267
-POLICY_MODEL_PATH=models/$MODEL/policy_model_$SEED
+OUTPUT_PATH=models/$MODEL/policy_model_$SEED
 
 DEBUG=${DEBUG:-false}
 TRACK_ARG=$([ "$DEBUG" = false ] && echo "--track" || echo "")
 
+FP16=${FP16:-false}
+
+if [ "$FP16" = true ]; then
+    DS_CONFIG=deepspeed_4gpu_fp16.yaml
+    local_rollout_forward_batch_size=32 # smaller fits better on GPU
+    gradient_accumulation_steps=128 # bigger fits better on GPU
+    local_micro_batch_size=4 # smaller fits better on GPU
+    local_eval_batch_size=1 # smaller fits better on GPU
+else
+    DS_CONFIG=deepspeed_1gpu.yaml
+    local_rollout_forward_batch_size=64 # smaller fits better on GPU
+    gradient_accumulation_steps=32 # bigger fits better on GPU
+    local_micro_batch_size=16 # smaller fits better on GPU
+    local_eval_batch_size=2 # smaller fits better on GPU
+fi
 
 # vary the following parameters to fit your GPU memory
-local_rollout_forward_batch_size=64 # smaller fits better on GPU
-gradient_accumulation_steps=32 # bigger fits better on GPU
-local_micro_batch_size=16 # smaller fits better on GPU
-local_eval_batch_size=2 # smaller fits better on GPU
 
 # 1. you want to make sure gradient_accumulation_steps * local_micro_batch_size = 64
 # so you have the same hyperparameters as the paper
@@ -28,7 +39,7 @@ local_eval_batch_size=2 # smaller fits better on GPU
 # gradient_accumulation_steps * local_micro_batch_size = 512 to have the same hyperparameters
 
 # proper left padding
-poetry run accelerate launch --config_file deepspeed_1gpu.yaml \
+python -m poetry run accelerate launch --config_file $DS_CONFIG \
     summarize_from_feedback_details/ppo_left_padding_new_lora.py \
     --ppo.no_whiten_rewards \
     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
@@ -44,5 +55,5 @@ poetry run accelerate launch --config_file deepspeed_1gpu.yaml \
     --run_eval \
     --push_to_hub \
     --wandb_entity="mnoukhov" \
-    --output_dir=$POLICY_MODEL_PATH \
+    --output_dir=$OUTPUT_PATH \
     --seed=$SEED $TRACK_ARG
