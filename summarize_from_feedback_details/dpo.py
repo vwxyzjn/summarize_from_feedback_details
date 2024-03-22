@@ -231,6 +231,9 @@ def evaluate_rm(args: Args, accelerator, tokenizer, model, ref_model, dataloader
             reward_preferred = args.beta * (chosen_logps - ref_chosen_logps)
             reward_rejected = args.beta * (rejected_logps - ref_rejected_logps)
             accuracy = reward_preferred > reward_rejected
+            accuracy = accelerator.gather(accuracy)
+            reward_preferred = accelerator.gather(reward_preferred)
+            reward_rejected = accelerator.gather(reward_rejected)
             for k in data:
                 data[k] = gather_object(data[k])
             for i in range(len(accuracy)):
@@ -245,6 +248,8 @@ def evaluate_rm(args: Args, accelerator, tokenizer, model, ref_model, dataloader
                 items["chosen_policy"].append(data["chosen_policy"][i])
                 items["rejected_policy"].append(data["rejected_policy"][i])
                 items["accuracy"].append(accuracy[i].item())
+                items["reward_preferred"].append(reward_preferred[i].item())
+                items["reward_rejected"].append(reward_rejected[i].item())
     model.train()
     return pd.DataFrame(items)
 

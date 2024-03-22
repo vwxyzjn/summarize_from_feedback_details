@@ -706,6 +706,7 @@ if __name__ == "__main__":
             value_mean, value_var = values.mean(), values.var()
             accelerator.print("rewards====", rewards[0])
             accelerator.print("advantages====", advantages[0])
+            accelerator.print("values====", values[0])
             torch.cuda.empty_cache()
 
         # Do multiple epochs of PPO training, with a fresh random shuffle in each epoch
