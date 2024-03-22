@@ -246,6 +246,9 @@ def evaluate(args: Args, accelerator, tokenizer, model, dataloader):
                 chosen_rewards = predicted_reward[:data['query_chosen_token'].shape[0]]
                 rejected_rewards = predicted_reward[data['query_chosen_token'].shape[0]:]
                 accuracy = (chosen_rewards > rejected_rewards).float()
+                accuracy = accelerator.gather(accuracy)
+                chosen_rewards = accelerator.gather(chosen_rewards)
+                rejected_rewards = accelerator.gather(rejected_rewards)
             for k in data:
                 data[k] = gather_object(data[k])
             for i in range(len(accuracy)):
@@ -260,6 +263,8 @@ def evaluate(args: Args, accelerator, tokenizer, model, dataloader):
                 items["chosen_policy"].append(data["chosen_policy"][i])
                 items["rejected_policy"].append(data["rejected_policy"][i])
                 items["accuracy"].append(accuracy[i].item())
+                items["chosen_rewards"].append(chosen_rewards[i].item())
+                items["rejected_rewards"].append(rejected_rewards[i].item())
     model.train()
     return pd.DataFrame(items)
 
