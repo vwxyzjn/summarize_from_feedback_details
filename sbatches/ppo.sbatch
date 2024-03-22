@@ -5,12 +5,12 @@
 #SBATCH --ntasks=1
 #SBATCH --output=slurm/logs/%x_%j.out
 #SBATCH --requeue
-#SBATCH --array=0-11 # %25
+#SBATCH --array=0-7 # %25
 #SBATCH --exclusive
 
 module load cuda/12.2
 export WANDB_TAGS=refactor-chosen-rejected3,no-tag-$(git rev-parse --short HEAD)
-MODELS=("EleutherAI/pythia-6.9b-deduped" "EleutherAI/pythia-2.8b-deduped" "EleutherAI/pythia-1b-deduped")
+MODELS=("EleutherAI/pythia-2.8b-deduped" "EleutherAI/pythia-1b-deduped")
 SEEDS=(44413 55513 66613 77713)
 MODEL_INDEX=$((SLURM_ARRAY_TASK_ID / 4))
 SEED_INDEX=$((SLURM_ARRAY_TASK_ID % 4))
@@ -57,13 +57,12 @@ if [ "$MODEL" = "EleutherAI/pythia-6.9b-deduped" ]; then
 fi
 
 srun poetry run accelerate launch --config_file deepspeed.yaml \
-    summarize_from_feedback_details/ppo_left_padding.py \
-    --exp_name=ppo_left_padding_128 \
-    --response_length=128 \
-    --no_non_eos_penalty \
+    summarize_from_feedback_details/ppo.py \
     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
     --gradient_accumulation_steps=$gradient_accumulation_steps \
     --local_micro_batch_size=$local_micro_batch_size \
+    --ppo.no_whiten_rewards \
+    --exp_name ppo \
     --base_model=$MODEL \
     --sft_model_path=$SFT_MODEL_PATH \
     --reward_model_path=$REWARD_MODEL_PATH \
