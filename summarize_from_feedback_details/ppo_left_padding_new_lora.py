@@ -411,7 +411,7 @@ def evaluate(
 ):
     eval_storage = defaultdict(list)
     with torch.no_grad():
-        for data in tqdm(dataloader):
+        for data in tqdm(dataloader, desc="eval", disable=True):
             queries = data["query_token"]
             reference_response_token = data["reference_response_token"]
             context_length = queries.shape[1]
@@ -670,7 +670,11 @@ if __name__ == "__main__":
     entropy_stats = torch.zeros(stats_shape, device=device)
     ratio_stats = torch.zeros(stats_shape, device=device)
     model.train()
-    for update in range(1, args.num_updates + 1):
+    for update in tqdm(
+        range(1, args.num_updates + 1),
+        desc="train",
+        disable=(not accelerator.is_main_process),
+    ):
         global_step += 1 * args.batch_size
         frac = 1.0 - (update - 1.0) / args.num_updates
         lrnow = frac * args.lr
