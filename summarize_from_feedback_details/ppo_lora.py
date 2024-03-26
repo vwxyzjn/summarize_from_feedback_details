@@ -2,7 +2,7 @@ import os
 import random
 import time
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import Literal, Optional
 
@@ -18,6 +18,7 @@ from accelerate.state import AcceleratorState
 from accelerate.utils import broadcast, gather_object
 from datasets import Dataset, load_dataset
 from huggingface_hub import HfApi
+from peft import LoraConfig, get_peft_model
 from rich.console import Console
 from rich.pretty import pprint
 from torch.utils.data import DataLoader
@@ -47,7 +48,7 @@ class PpoHParams:
     cliprange_value: float = 0.2
     gamma: float = 1
     lam: float = 0.95
-    whiten_rewards: bool = False
+    whiten_rewards: bool = True
     kl_coef: float = 0.05
 
 
@@ -134,8 +135,22 @@ class Args:
     """Whether to offload ref policy and reward model to CPU"""
     reward_model_path: str = ""
     """the path to the reward model"""
+    reward_model_revision: Optional[str] = None
+    """the revision of the reward model"""
     sft_model_path: str = "EleutherAI/pythia-160m"
     """the path to the sft model"""
+    sft_model_revision: Optional[str] = None
+    """the revision of the sft model"""
+    lora_config: LoraConfig = field(
+        default_factory=lambda: LoraConfig(
+            r=8,
+            lora_alpha=32,
+            bias="none",
+            task_type="CAUSAL_LM",
+            lora_dropout=0.0,
+            target_modules="all-linear",
+        ),
+    )
 
     # wandb and HF tracking configs
     track: bool = False
@@ -374,7 +389,7 @@ def forward(model, query_responses, tokenizer):
 def evaluate(reward_model, policy, tokenizer, dataloader, generation_config, sampling=True):
     eval_storage = defaultdict(list)
     with torch.no_grad():
-        for data in tqdm(dataloader):
+        for data in tqdm(dataloader, desc="eval", disable=True):
             queries = data["query_token"]
             reference_response_token = data["reference_response_token"]
             context_length = queries.shape[1]
@@ -476,26 +491,40 @@ if __name__ == "__main__":
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
     model_config = AutoConfig.from_pretrained(args.base_model)
-    scalar_model_config = ScalarModelConfig(
-        base_model=args.base_model,
-        base_config=model_config,
-        hidden_size=model_config.hidden_size,
+    scalar_model_config = ScalarModelConfig.from_pretrained(
+        args.reward_model_path,
+        revision=args.reward_model_revision,
     )
-    if not args.reward_model_path:
-        critic: PreTrainedModel = ScalarModel(scalar_model_config)
-        reward_model: PreTrainedModel = ScalarModel(scalar_model_config)
-    else:
-        critic: PreTrainedModel = ScalarModel.from_pretrained(
-            args.reward_model_path,
-            trust_remote_code=True,
-        )
-        reward_model: PreTrainedModel = ScalarModel.from_pretrained(
-            args.reward_model_path,
-            trust_remote_code=True,
-        )
-    ref_policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
-    policy = AutoModelForCausalLM.from_pretrained(args.sft_model_path, config=model_config, trust_remote_code=True)
-    for module in [policy, ref_policy, critic, reward_model]:
+    # hack to remove the path
+    # models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
+    if scalar_model_config.base_model.startswith("models/"):
+        _, _, original_model, sft_revision = scalar_model_config.base_config["_name_or_path"].split("/")
+        sft_model = f"vwxyzjn/EleutherAI_{original_model}__sft__tldr"
+        scalar_model_config.base_config["_name_or_path"] = sft_model
+        scalar_model_config.base_model = sft_model
+        scalar_model_config.base_model_revision = sft_revision
+
+    base_critic: PreTrainedModel = ScalarModel.from_pretrained(
+        args.reward_model_path,
+        revision=args.reward_model_revision,
+        config=scalar_model_config,
+    )
+    reward_model: PreTrainedModel = ScalarModel.from_pretrained(
+        args.reward_model_path,
+        revision=args.reward_model_revision,
+        config=scalar_model_config,
+    )
+    critic_lora_config = replace(args.lora_config, task_type="FEATURE_EXTRACTION")
+    critic = get_peft_model(base_critic, critic_lora_config)
+
+    base_policy = AutoModelForCausalLM.from_pretrained(
+        args.sft_model_path,
+        revision=args.sft_model_revision,
+        config=model_config,
+        trust_remote_code=True,
+    )
+    policy = get_peft_model(base_policy, args.lora_config)
+    for module in [policy, critic, reward_model]:
         disable_dropout(module)
     policy.generation_config.eos_token_id = None  # disable `pad_token_id` and `eos_token_id` because we just want to
     policy.generation_config.pad_token_id = None  # generate tokens without truncation / padding
@@ -539,10 +568,7 @@ if __name__ == "__main__":
         accelerator.print(f"{eval_ds_config=}")
         reward_model, *_ = deepspeed.initialize(model=reward_model, config=eval_ds_config)
         reward_model.eval()
-        ref_policy, *_ = deepspeed.initialize(model=ref_policy, config=eval_ds_config)
-        ref_policy.eval()
     else:
-        ref_policy = ref_policy.to(device)
         reward_model = reward_model.to(device)
 
     generation_config = GenerationConfig(
@@ -580,7 +606,11 @@ if __name__ == "__main__":
     entropy_stats = torch.zeros(stats_shape, device=device)
     ratio_stats = torch.zeros(stats_shape, device=device)
     model.train()
-    for update in range(1, args.num_updates + 1):
+    for update in tqdm(
+        range(1, args.num_updates + 1),
+        desc="train",
+        disable=(not accelerator.is_main_process),
+    ):
         global_step += 1 * args.batch_size
         frac = 1.0 - (update - 1.0) / args.num_updates
         lrnow = frac * args.lr
@@ -633,7 +663,8 @@ if __name__ == "__main__":
                 del logits, all_logprob
                 torch.cuda.empty_cache()
 
-                ref_output = forward(ref_policy, query_response, tokenizer)
+                with policy.disable_adapter():
+                    ref_output = forward(policy, query_response, tokenizer)
                 ref_logits = ref_output.logits[:, context_length - 1 : -1]
                 ref_logits /= args.temperature + 1e-7
                 ref_all_logprob = F.log_softmax(ref_logits, dim=-1)
@@ -735,7 +766,6 @@ if __name__ == "__main__":
             value_mean, value_var = values.mean(), values.var()
             accelerator.print("rewards====", rewards[0])
             accelerator.print("advantages====", advantages[0])
-            accelerator.print("values====", values[0])
             torch.cuda.empty_cache()
 
         # Do multiple epochs of PPO training, with a fresh random shuffle in each epoch
