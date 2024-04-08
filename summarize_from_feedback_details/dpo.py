@@ -14,8 +14,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from accelerate import Accelerator
-from accelerate.utils import gather_object, broadcast
+from accelerate.utils import broadcast, gather_object
 from datasets import load_dataset
+from huggingface_hub import HfApi
 from rich.console import Console
 from rich.pretty import pprint
 from rich.table import Table
@@ -23,15 +24,8 @@ from torch import optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    GenerationConfig,
-    PreTrainedModel,
-    get_scheduler,
-)
-from huggingface_hub import HfApi
+from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
+                          GenerationConfig, PreTrainedModel, get_scheduler)
 
 api = HfApi()
 
@@ -146,11 +140,11 @@ def parse_args() -> tuple[Args, Accelerator]:
     time_int = broadcast(time_tensor, 0).item()  # avoid different timestamps across processes
     args.run_name = f"{args.exp_name}__{args.seed}__{time_int}"
     if args.push_to_hub:
-        if args.hf_repo_id is None: # auto-generate one
+        if args.hf_repo_id is None:  # auto-generate one
             args.hf_repo_id = f"{args.base_model.replace('/', '_')}__{args.exp_name}__tldr"
         if args.hf_entity is None:  # find the current user
             args.hf_entity = api.whoami()["name"]
-        if "/" not in args.hf_repo_id: # prepend the current user
+        if "/" not in args.hf_repo_id:  # prepend the current user
             args.hf_repo_id = f"{args.hf_entity}/{args.hf_repo_id}"
         if args.hf_repo_revision is None:  # auto-generate one
             args.hf_repo_revision = args.run_name
@@ -176,11 +170,11 @@ def forward(model, query_responses, labels, tokenizer):
     )
     labels = labels[:, 1:].clone()
     logits = output.logits[:, :-1, :]
-    loss_mask = (labels != tokenizer.pad_token_id)
+    loss_mask = labels != tokenizer.pad_token_id
     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
     all_logps = (per_token_logps * loss_mask).sum(-1)
-    chosen_logps = all_logps[:query_responses.shape[0] // 2]
-    rejected_logps = all_logps[query_responses.shape[0] // 2:]
+    chosen_logps = all_logps[: query_responses.shape[0] // 2]
+    rejected_logps = all_logps[query_responses.shape[0] // 2 :]
     return chosen_logps, rejected_logps
 
 
@@ -254,7 +248,6 @@ def evaluate_rm(args: Args, accelerator, tokenizer, model, ref_model, dataloader
     return pd.DataFrame(items)
 
 
-
 @dataclass
 class EvalStorage:
     query_token: List[str] = field(default_factory=list)
@@ -307,6 +300,7 @@ def evaluate_policy(args: Args, model, tokenizer, dataloader, generation_config,
     )
     return eval_storage, eval_df
 
+
 # def train(args: Args):
 if __name__ == "__main__":
     args, accelerator = parse_args()
@@ -357,7 +351,9 @@ if __name__ == "__main__":
         eval_datasets.append(validation_dataset)
         eval_dataloaders[split] = DataLoader(validation_dataset, batch_size=args.local_eval_batch_size)
     sft_validation_dataset = load_dataset(args.query_dataset, split="validation")
-    sft_validation_dataset = sft_validation_dataset.with_format("torch", columns=["query_token", "reference_response_token", "query_reference_response_token_response_label"])
+    sft_validation_dataset = sft_validation_dataset.with_format(
+        "torch", columns=["query_token", "reference_response_token", "query_reference_response_token_response_label"]
+    )
     sft_validation_dataloader = DataLoader(sft_validation_dataset, batch_size=args.local_eval_batch_size)
     args.num_updates = args.total_episodes // args.batch_size
 
@@ -468,9 +464,12 @@ if __name__ == "__main__":
                 ref_logratios = ref_chosen_logps - ref_rejected_logps
                 logits = pi_logratios - ref_logratios  # also known as h_{\pi_\theta}^{y_w,y_l}
                 if args.ipo:
-                    loss = (logits - 1/(2 * args.beta)) ** 2  # Eq. 17 of https://arxiv.org/pdf/2310.12036v2.pdf
+                    loss = (logits - 1 / (2 * args.beta)) ** 2  # Eq. 17 of https://arxiv.org/pdf/2310.12036v2.pdf
                 else:
-                    loss = -F.logsigmoid(args.beta * logits) * (1 - args.label_smoothing) - F.logsigmoid(-args.beta * logits) * args.label_smoothing
+                    loss = (
+                        -F.logsigmoid(args.beta * logits) * (1 - args.label_smoothing)
+                        - F.logsigmoid(-args.beta * logits) * args.label_smoothing
+                    )
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
@@ -499,7 +498,9 @@ if __name__ == "__main__":
                 )
 
     if args.run_eval:
-        _, evaluate_df = evaluate_policy(args, model, tokenizer, sft_validation_dataloader, validation_generation_config, sampling=False)
+        _, evaluate_df = evaluate_policy(
+            args, model, tokenizer, sft_validation_dataloader, validation_generation_config, sampling=False
+        )
         if accelerator.is_main_process:
             evaluate_df.to_csv(f"runs/{args.run_name}/table.csv")
             if args.track:
