@@ -23,15 +23,9 @@ from rich.pretty import pprint
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    GenerationConfig,
-    PretrainedConfig,
-    PreTrainedModel,
-)
+from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM,
+                          AutoTokenizer, GenerationConfig, PretrainedConfig,
+                          PreTrainedModel)
 
 torch.set_printoptions(precision=4, sci_mode=False)
 api = HfApi()
