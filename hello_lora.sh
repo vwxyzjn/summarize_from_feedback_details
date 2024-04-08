@@ -10,7 +10,7 @@ REWARD_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr
 REWARD_MODEL_REVISION=reward__${SEED}__1708628552
 SFT_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__sft__tldr
 SFT_MODEL_REVISION=sft__${SEED}__1708611267
-OUTPUT_PATH=models/$MODEL/policy_model_$SEED
+OUTPUT_PATH=/home/toolkit/summarize_from_feedback_details/models/$MODEL/policy_model_$SEED
 
 DEBUG=${DEBUG:-false}
 TRACK_ARG=$([ "$DEBUG" = false ] && echo "--track" || echo "")
@@ -40,17 +40,33 @@ fi
 # gradient_accumulation_steps * local_micro_batch_size = 512 to have the same hyperparameters
 
 # proper left padding
+# python -m poetry run accelerate launch --config_file $DS_CONFIG \
+#     summarize_from_feedback_details/ppo_lora.py \
+#     --ppo.no_whiten_rewards \
+#     --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
+#     --gradient_accumulation_steps=$gradient_accumulation_steps \
+#     --local_micro_batch_size=$local_micro_batch_size \
+#     --base_model=$MODEL \
+#     --sft_model_path=$SFT_MODEL_PATH \
+#     --sft_model_revision=$SFT_MODEL_REVISION \
+#     --reward_model_path=$REWARD_MODEL_PATH \
+#     --reward_model_revision=$REWARD_MODEL_REVISION \
+#     --lr=$LR \
+#     --deepspeed \
+#     --run_eval \
+#     --push_to_hub \
+#     --wandb_entity="mnoukhov" \
+#     --output_dir=$OUTPUT_PATH \
+#     --seed=$SEED $TRACK_ARG
+
+# dpo
 python -m poetry run accelerate launch --config_file $DS_CONFIG \
-    summarize_from_feedback_details/ppo_left_padding_new_lora.py \
-    --ppo.no_whiten_rewards \
-    --local_rollout_forward_batch_size=$local_rollout_forward_batch_size \
+    summarize_from_feedback_details/dpo_lora.py \
     --gradient_accumulation_steps=$gradient_accumulation_steps \
     --local_micro_batch_size=$local_micro_batch_size \
     --base_model=$MODEL \
     --sft_model_path=$SFT_MODEL_PATH \
     --sft_model_revision=$SFT_MODEL_REVISION \
-    --reward_model_path=$REWARD_MODEL_PATH \
-    --reward_model_revision=$REWARD_MODEL_REVISION \
     --lr=$LR \
     --deepspeed \
     --run_eval \
