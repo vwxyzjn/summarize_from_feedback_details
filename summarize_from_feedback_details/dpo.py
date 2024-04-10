@@ -91,6 +91,8 @@ class Args:
     """the query dataset"""
     sft_model_path: str = "EleutherAI/pythia-160m"
     """the path to the sft model"""
+    sft_model_revision: Optional[str] = None
+    """the revision of the sft model"""
     response_length: int = 53
     """the length of the response"""
     truncate_token: Literal["eos"] = "eos"
@@ -398,11 +400,13 @@ if __name__ == "__main__":
     model_config = AutoConfig.from_pretrained(args.sft_model_path)
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         args.sft_model_path,
+        revision=args.sft_model_revision,
         config=model_config,
         trust_remote_code=True,
     )
     ref_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         args.sft_model_path,
+        revision=args.sft_model_revision,
         config=model_config,
         trust_remote_code=True,
     )
@@ -470,6 +474,7 @@ if __name__ == "__main__":
                         -F.logsigmoid(args.beta * logits) * (1 - args.label_smoothing)
                         - F.logsigmoid(-args.beta * logits) * args.label_smoothing
                     )
+                loss = loss.mean()
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
