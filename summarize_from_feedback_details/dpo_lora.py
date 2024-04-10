@@ -17,7 +17,7 @@ from accelerate import Accelerator
 from accelerate.utils import broadcast, gather_object
 from datasets import load_dataset
 from huggingface_hub import HfApi
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model
 from rich.console import Console
 from rich.pretty import pprint
 from rich.table import Table
@@ -553,10 +553,11 @@ if __name__ == "__main__":
             tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
                 tokenizer.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision)
-        unwrapped: PreTrainedModel = accelerator.unwrap_model(model)
+        unwrapped: PeftModel = accelerator.unwrap_model(model).policy
+        unwrapped_merged: PreTrainedModel = unwrapped.merge_and_unload()
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
-            unwrapped.save_pretrained(
+            unwrapped_merged.save_pretrained(
                 args.output_dir,
                 is_main_process=accelerator.is_main_process,
                 save_function=accelerator.save,
@@ -564,5 +565,5 @@ if __name__ == "__main__":
                 safe_serialization=False,
             )
             if args.push_to_hub:
-                unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
-                accelerator.print(f"🔥 pushed to {args.hf_repo_url}")
+                unwrapped_merged.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
+                accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")
