@@ -4,7 +4,6 @@ if [ -z "$MODEL" ]; then
     MODEL=EleutherAI/pythia-1b-deduped
     # MODEL=EleutherAI/pythia-410m-deduped
 fi
-LR=3e-6
 SEED=55513
 SFT_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__sft__tldr
 SFT_MODEL_REVISION=sft__${SEED}__1708611267
@@ -37,7 +36,6 @@ python -m poetry run accelerate launch --config_file $DS_CONFIG \
     --base_model=$MODEL \
     --sft_model_path=$SFT_MODEL_PATH \
     --sft_model_revision=$SFT_MODEL_REVISION \
-    --lr=$LR \
     --deepspeed \
     --run_eval \
     --push_to_hub \
