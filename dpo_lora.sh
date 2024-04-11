@@ -6,8 +6,6 @@ if [ -z "$MODEL" ]; then
 fi
 LR=3e-6
 SEED=55513
-REWARD_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr
-REWARD_MODEL_REVISION=reward__${SEED}__1708628552
 SFT_MODEL_PATH=vwxyzjn/EleutherAI_pythia-1b-deduped__sft__tldr
 SFT_MODEL_REVISION=sft__${SEED}__1708611267
 OUTPUT_PATH=/home/toolkit/summarize_from_feedback_details/models/$MODEL/policy_model_$SEED
@@ -45,4 +43,5 @@ python -m poetry run accelerate launch --config_file $DS_CONFIG \
     --push_to_hub \
     --wandb_entity="mnoukhov" \
     --output_dir=$OUTPUT_PATH \
-    --seed=$SEED $TRACK_ARG
+    --seed=$SEED $TRACK_ARG \
+    $@
