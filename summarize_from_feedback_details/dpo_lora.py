@@ -17,6 +17,7 @@ from accelerate import Accelerator
 from accelerate.utils import broadcast, gather_object
 from datasets import load_dataset
 from huggingface_hub import HfApi
+from peft import LoraConfig, PeftModel, get_peft_model
 from rich.console import Console
 from rich.pretty import pprint
 from rich.table import Table
@@ -109,6 +110,17 @@ class Args:
     """Label smoothing for DPO (Eq. 3 https://ericmitchell.ai/cdpo.pdf; label_smoothing=0 gives original DPO (Eq. 7 of https://arxiv.org/pdf/2305.18290.pdf))"""
     beta: float = 0.05
     """The beta value for DPO"""
+    lora_config: LoraConfig = field(
+        default_factory=lambda: LoraConfig(
+            r=8,
+            lora_alpha=32,
+            bias="none",
+            task_type="CAUSAL_LM",
+            lora_dropout=0.0,
+            target_modules="all-linear",
+        ),
+    )
+    """The peft lora config"""
 
     # wandb and HF tracking configs
     track: bool = False
@@ -215,14 +227,15 @@ def truncate_response(args, tokenizer, responses):
     return postprocessed_responses
 
 
-def evaluate_rm(args: Args, accelerator, tokenizer, model, ref_model, dataloader):
+def evaluate_rm(args: Args, accelerator, tokenizer, model, dataloader):
     model.eval()
     with torch.no_grad():
         items = defaultdict(list)
         for data in tqdm(dataloader):
             query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
             labels = torch.cat((data["query_chosen_token_response_label"], data["query_rejected_token_response_label"]), dim=0)
-            ref_chosen_logps, ref_rejected_logps = forward(ref_model, query_responses, labels, tokenizer)
+            with model.disable_adapter():
+                ref_chosen_logps, ref_rejected_logps = forward(model, query_responses, labels, tokenizer)
             chosen_logps, rejected_logps = forward(model, query_responses, labels, tokenizer)
             reward_preferred = args.beta * (chosen_logps - ref_chosen_logps)
             reward_rejected = args.beta * (rejected_logps - ref_rejected_logps)
@@ -398,18 +411,13 @@ if __name__ == "__main__":
     torch.manual_seed(local_seed)
     torch.backends.cudnn.deterministic = True
     model_config = AutoConfig.from_pretrained(args.sft_model_path)
-    model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
+    base_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         args.sft_model_path,
         revision=args.sft_model_revision,
         config=model_config,
         trust_remote_code=True,
     )
-    ref_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
-        args.sft_model_path,
-        revision=args.sft_model_revision,
-        config=model_config,
-        trust_remote_code=True,
-    )
+    model = get_peft_model(base_model, args.lora_config)
     disable_dropout(model)
     model.generation_config.eos_token_id = None  # disable `pad_token_id` and `eos_token_id` because we just want to
     model.generation_config.pad_token_id = None  # generate tokens without truncation / padding
@@ -432,7 +440,6 @@ if __name__ == "__main__":
     sft_validation_dataloader = accelerator.prepare(sft_validation_dataloader)
     torch.manual_seed(local_seed)  # reset the local seed again
 
-    ref_model = ref_model.to(device)
     # use the same `0.01` temperature for validation response generation https://github.com/openai/summarize-from-feedback/blob/700967448d10004279f138666442bf1497d0e705/exps/sample.py#L27
     validation_generation_config = GenerationConfig(
         max_new_tokens=128,
@@ -461,7 +468,8 @@ if __name__ == "__main__":
             query_responses = torch.cat((data["query_chosen_token"], data["query_rejected_token"]), dim=0)
             labels = torch.cat((data["query_chosen_token_response_label"], data["query_rejected_token_response_label"]), dim=0)
             with torch.no_grad():
-                ref_chosen_logps, ref_rejected_logps = forward(ref_model, query_responses, labels, tokenizer)
+                with model.disable_adapter():
+                    ref_chosen_logps, ref_rejected_logps = forward(model, query_responses, labels, tokenizer)
             with accelerator.accumulate(model):
                 chosen_logps, rejected_logps = forward(model, query_responses, labels, tokenizer)
                 pi_logratios = chosen_logps - rejected_logps
@@ -513,7 +521,7 @@ if __name__ == "__main__":
         del evaluate_df
         torch.cuda.empty_cache()
         for eval_split in eval_dataloaders:
-            evaluate_df = evaluate_rm(args, accelerator, tokenizer, model, ref_model, eval_dataloaders[eval_split])
+            evaluate_df = evaluate_rm(args, accelerator, tokenizer, model, eval_dataloaders[eval_split])
             for split, row in evaluate_df[["split", "accuracy"]].groupby(["split"]).mean().iterrows():
                 writer.add_scalar(f"eval/rm/{eval_split}/accuracy/split/{split}", row["accuracy"], global_step)
                 accelerator.print(f"eval/rm/{eval_split}/accuracy/split/{split}: {row['accuracy']}")
@@ -545,10 +553,11 @@ if __name__ == "__main__":
             tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
                 tokenizer.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision)
-        unwrapped: PreTrainedModel = accelerator.unwrap_model(model)
+        unwrapped: PeftModel = accelerator.unwrap_model(model).policy
+        unwrapped_merged: PreTrainedModel = unwrapped.merge_and_unload()
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
-            unwrapped.save_pretrained(
+            unwrapped_merged.save_pretrained(
                 args.output_dir,
                 is_main_process=accelerator.is_main_process,
                 save_function=accelerator.save,
@@ -556,5 +565,5 @@ if __name__ == "__main__":
                 safe_serialization=False,
             )
             if args.push_to_hub:
-                unwrapped.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
-                accelerator.print(f"🔥 pushed to {args.hf_repo_url}")
+                unwrapped_merged.push_to_hub(repo_id=args.hf_repo_id, revision=args.hf_repo_revision, safe_serialization=False)
+                accelerator.print(f"🔥 pushed to https://huggingface.co/{args.hf_repo_id}/tree/{args.hf_repo_revision}")

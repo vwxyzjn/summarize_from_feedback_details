@@ -2401,6 +2401,35 @@ files = [
 ]
 
 [[package]]
+name = "peft"
+version = "0.9.0"
+description = "Parameter-Efficient Fine-Tuning (PEFT)"
+optional = false
+python-versions = ">=3.8.0"
+files = [
+    {file = "peft-0.9.0-py3-none-any.whl", hash = "sha256:d14223fee6050c53593733e8f763d94c13577e1220987f59ae473d988f2ccd91"},
+    {file = "peft-0.9.0.tar.gz", hash = "sha256:3b8d09dff94d1bfa72e064cb26af5952fd82428e2bcce432cfaf091f5035b04b"},
+]
+
+[package.dependencies]
+accelerate = ">=0.21.0"
+huggingface-hub = ">=0.17.0"
+numpy = ">=1.17"
+packaging = ">=20.0"
+psutil = "*"
+pyyaml = "*"
+safetensors = "*"
+torch = ">=1.13.0"
+tqdm = "*"
+transformers = "*"
+
+[package.extras]
+dev = ["black", "hf-doc-builder", "ruff (>=0.2.1,<0.3.0)"]
+docs-specific = ["black", "hf-doc-builder"]
+quality = ["black", "hf-doc-builder", "ruff (>=0.2.1,<0.3.0)"]
+test = ["black", "datasets", "diffusers (<0.21.0)", "hf-doc-builder", "parameterized", "pytest", "pytest-cov", "pytest-xdist", "ruff (>=0.2.1,<0.3.0)", "scipy"]
+
+[[package]]
 name = "pexpect"
 version = "4.8.0"
 description = "Pexpect allows easy control of interactive console applications."
@@ -4318,4 +4347,4 @@ testing = ["big-O", "flake8 (<5)", "jaraco.functools", "jaraco.itertools", "more
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.9,<4.0"
-content-hash = "362291abe625080df547e6f31ecfc5c30883f8aca7e9ffdda9227ffb607d4949"
+content-hash = "d8ba9ae017a3980a8be99bab035904689170206813410930a6305c3a05c934d0"
