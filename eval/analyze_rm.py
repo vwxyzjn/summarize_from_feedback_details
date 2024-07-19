@@ -60,11 +60,6 @@ need_check_paths = {
         "pythia-2.8b-deduped": "sampled_data/refactor-chosen-rejected3/ppo_left_padding/EleutherAI/pythia-2.8b-deduped",
         "pythia-6.9b-deduped": "sampled_data/refactor-chosen-rejected3/ppo_left_padding/EleutherAI/pythia-6.9b-deduped",
     },
-    # ppo_left_padding_new
-    "ppo_left_padding_new": {
-        "pythia-1b-deduped": "sampled_data/refactor-chosen-rejected3/ppo_left_padding_new/EleutherAI/pythia-1b-deduped",
-        "pythia-2.8b-deduped": "sampled_data/refactor-chosen-rejected3/ppo_left_padding_new/EleutherAI/pythia-1b-deduped",
-    },
 }
 
 colors = sns.color_palette("colorblind", n_colors=len(need_check_paths))
@@ -104,4 +99,4 @@ plt.legend()
 # Display the plot
 plt.grid(True, which="both", ls="--", c="0.7")
 plt.tight_layout()
-plt.savefig("rm_scale_plot.png")
+plt.savefig('images/rm_gpt_agreement_scale_plot.png')

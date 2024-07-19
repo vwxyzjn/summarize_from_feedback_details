@@ -5,7 +5,6 @@ import random
 from dataclasses import dataclass, field
 import time
 from typing import Optional
-import openai
 
 import pandas as pd
 import tyro
@@ -23,7 +22,7 @@ class LLMJudgeConfig:
         if "gpt-3.5" in self.model:
             # gpt-3.5 generates so fast that it will exceeds the
             # token limit per minute
-            self.max_parallel_requests = 6
+            self.max_parallel_requests = 11
         elif "gpt-4" in self.model:
             self.max_parallel_requests = 13
 

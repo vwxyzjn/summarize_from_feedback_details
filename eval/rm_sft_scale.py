@@ -13,6 +13,7 @@ wandb_tag = "refactor-chosen-rejected3"
 model_sizes = {
     # "EleutherAI/pythia-410m-deduped": 410e6,
     "EleutherAI/pythia-1b-deduped": 1e9,
+    "EleutherAI/pythia-1.4b-deduped": 1.4e9,
     "EleutherAI/pythia-2.8b-deduped": 2.8e9,
     "EleutherAI/pythia-6.9b-deduped": 6.9e9,
 }
@@ -165,47 +166,47 @@ plt.clf()
 # plt.clf()
 
 
-df = get_runs_df(wandb.Api().runs(
-    path=f"costa-huang/tldr_summarize",
-    filters={
-        "$and": [
-            {f"config.exp_name.value": "reward"},
-            {"tags": {"$in": [wandb_tag]}},
-        ]
-    }
-))
-fig, ax = plt.subplots(figsize=(4.0, 3.0))
-ykeys = ["eval/rm/validation/accuracy"]
-plot_reward(df, ["#00008b"], ["Reward Modeling"], ykeys, ax=ax)
-df2 = get_runs_df(wandb.Api().runs(
-    path=f"costa-huang/tldr_summarize",
-    filters={
-        "$and": [
-            {f"config.exp_name.value": "dpo"},
-            {"tags": {"$in": ["refactor-chosen-rejected2"]}},
-        ]
-    }
-))
-plot_reward(df2, ["#0000ff"], ["DPO Reward Modeling"], ykeys, ax=ax)
+# df = get_runs_df(wandb.Api().runs(
+#     path=f"costa-huang/tldr_summarize",
+#     filters={
+#         "$and": [
+#             {f"config.exp_name.value": "reward"},
+#             {"tags": {"$in": [wandb_tag]}},
+#         ]
+#     }
+# ))
+# fig, ax = plt.subplots(figsize=(4.0, 3.0))
+# ykeys = ["eval/rm/validation/accuracy"]
+# plot_reward(df, ["#00008b"], ["Reward Modeling"], ykeys, ax=ax)
+# df2 = get_runs_df(wandb.Api().runs(
+#     path=f"costa-huang/tldr_summarize",
+#     filters={
+#         "$and": [
+#             {f"config.exp_name.value": "dpo"},
+#             {"tags": {"$in": ["refactor-chosen-rejected3"]}},
+#         ]
+#     }
+# ))
+# plot_reward(df2, ["#0000ff"], ["DPO Reward Modeling"], ykeys, ax=ax)
 
-# # Adding the human baseline and ensemble of humans
-# plt.axhline(y=0.77, color='black', linestyle='-.', label='Human baseline')
-# plt.axhline(y=0.83, color='black', linestyle='--', label='Ensemble of humans')
+# # # Adding the human baseline and ensemble of humans
+# # plt.axhline(y=0.77, color='black', linestyle='-.', label='Human baseline')
+# # plt.axhline(y=0.83, color='black', linestyle='--', label='Ensemble of humans')
 
-# Setting the title and labels
-plt.title("RM scaling")
-plt.xlabel("Model size")
-plt.ylabel("Validation accuracy")
-plt.xscale("log")  # Setting the x-axis to a logarithmic scale
-plt.xlim(5e8, 1e10) 
-plt.legend()
+# # Setting the title and labels
+# plt.title("RM scaling")
+# plt.xlabel("Model size")
+# plt.ylabel("Validation accuracy")
+# plt.xscale("log")  # Setting the x-axis to a logarithmic scale
+# plt.xlim(5e8, 1e10) 
+# plt.legend()
 
-# Display the plot
-plt.grid(True, which="both", ls="--", c='0.7')
-plt.tight_layout()
-fig.savefig("images/rm_scale_dpo_plot.png")
-fig.savefig("images/rm_scale_dpo_plot.pdf")
-plt.clf()
+# # Display the plot
+# plt.grid(True, which="both", ls="--", c='0.7')
+# plt.tight_layout()
+# fig.savefig("images/rm_scale_dpo_plot.png")
+# fig.savefig("images/rm_scale_dpo_plot.pdf")
+# plt.clf()
 
 
 ykeys = [item for item in  df.columns if "eval/rm" in item]

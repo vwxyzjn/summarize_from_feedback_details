@@ -294,6 +294,7 @@ These columns are added by this preprocessing script:
             "chosen_policy": chosen_policy,
             "rejected_policy": rejected_policy,
             "policies": policies,
+            "chosen_len_minus_rejected_len": len(tokenizer.encode(chosen)) - len(tokenizer.encode(rejected)),
         }
         y["query_chosen"] = y["query"].strip() + y["chosen"]
         # if padding is space, then we can just concatenate the tokens
@@ -342,7 +343,7 @@ These columns are added by this preprocessing script:
 
     os.makedirs("dataset_visuals", exist_ok=True)
     num_sft_visuals = 2
-    num_label_visuals = 5
+    num_label_visuals = 6
     num_subplots = len(sft_ds) * num_sft_visuals + len(label_ds) * num_label_visuals
     num_cols = 3
     print(f"{num_subplots=}")
@@ -371,16 +372,19 @@ These columns are added by this preprocessing script:
         axs[j].set_title(f"{split} split: chosen token length\nmax_length={max(df['chosen_token_len'])}")
         axs[j + 1].hist(df["rejected_token_len"], bins=100)
         axs[j + 1].set_title(f"{split} split: rejected token length\nmax_length={max(df['rejected_token_len'])}")
-        axs[j + 2].hist(df["query_chosen_token_len"], bins=100)
-        axs[j + 2].set_title(
+        axs[j + 2].hist(df["chosen_len_minus_rejected_len"], bins=100)
+        print("haha")
+        axs[j + 2].set_title(f"{split} split: chosen token len - rejected token len\nmax={max(df['chosen_len_minus_rejected_len'])}")
+        axs[j + 3].hist(df["query_chosen_token_len"], bins=100)
+        axs[j + 3].set_title(
             f"{split} split: query.strip() + chosen token length\nmax_length={max(df['query_chosen_token_len'])}"
         )
-        axs[j + 3].hist(df["query_rejected_token_len"], bins=100)
-        axs[j + 3].set_title(
+        axs[j + 4].hist(df["query_rejected_token_len"], bins=100)
+        axs[j + 4].set_title(
             f"{split} split: query.strip() + rejected token length\nmax_length={max(df['query_rejected_token_len'])}"
         )
-        axs[j + 4].hist(df["query_token_len"], bins=100)
-        axs[j + 4].set_title(f"{split} split: query token length\nmax_length={max(df['query_token_len'])}")
+        axs[j + 5].hist(df["query_token_len"], bins=100)
+        axs[j + 5].set_title(f"{split} split: query token length\nmax_length={max(df['query_token_len'])}")
         if split in ["train", "validation"]:
             calculated_tldr_params.max_rm_response_length = max(
                 calculated_tldr_params.max_rm_response_length, max(df["chosen_token_len"]), max(df["rejected_token_len"])
