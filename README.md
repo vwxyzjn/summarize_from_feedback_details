@@ -79,3 +79,17 @@ Note that these datasets use the same OpenAI processing as the original paper ([
 
 * make sure query is only 512 tokens (pad if shorter, and ''smartly truncate'' if longer, e.g., like it will truncate at before the last `\n` instead of a hard truncation.)
 * make sure response tokens is limited
+
+## Citation
+
+```bibtex
+@inproceedings{
+huang2024the,
+title={The N+ Implementation Details of {RLHF} with {PPO}: A Case Study on {TL};{DR} Summarization},
+author={Shengyi Huang and Michael Noukhovitch and Arian Hosseini and Kashif Rasul and Weixun Wang and Lewis Tunstall},
+booktitle={First Conference on Language Modeling},
+year={2024},
+url={https://openreview.net/forum?id=kHO2ZTa8e3}
+}
+```
+
